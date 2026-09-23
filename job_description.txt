@@ -1,0 +1,14 @@
+Job Title: Frontend Developer
+
+We are looking for a Frontend Developer with 5+ years of experience.
+
+Requirements:
+- Strong experience with React.js and Next.js
+- Proficiency in Tailwind CSS and Material UI
+- Experience integrating REST APIs
+- Familiarity with Git and CI/CD workflows
+- Good communication skills
+
+Nice to have:
+- Experience with Python (FastAPI/Flask)
+- Knowledge of headless CMS such as Strapi
