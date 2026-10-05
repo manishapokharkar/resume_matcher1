@@ -22,10 +22,23 @@ from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_groq import ChatGroq
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from streamlit.errors import StreamlitSecretNotFoundError
 
 load_dotenv()
 
-GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+
+def get_setting(name: str, default: str = "") -> str:
+    value = os.getenv(name)
+    if value:
+        return value
+
+    try:
+        return st.secrets.get(name, default)
+    except StreamlitSecretNotFoundError:
+        return default
+
+
+GROQ_MODEL = get_setting("GROQ_MODEL", "openai/gpt-oss-120b")
 URL_RE = re.compile(r"https?://[^\s)>\]]+")
 
 
@@ -127,7 +140,7 @@ PROMPT = ChatPromptTemplate.from_messages(
 
 
 def analyze_match(state: MatchState) -> MatchState:
-    llm = ChatGroq(model=GROQ_MODEL, temperature=0, api_key=os.getenv("GROQ_API_KEY"))
+    llm = ChatGroq(model=GROQ_MODEL, temperature=0, api_key=get_setting("GROQ_API_KEY"))
     chain = PROMPT | llm | JsonOutputParser()
     result = chain.invoke({"jd": state["jd_full"][:8000], "context": state["context"]})
     return {"result": result}
@@ -397,12 +410,12 @@ with st.sidebar:
             "job requirements."
         )
 
-    if not os.getenv("GROQ_API_KEY"):
-        st.warning("GROQ_API_KEY is not set. Add it to your .env file before matching.")
+    if not get_setting("GROQ_API_KEY"):
+        st.warning("GROQ_API_KEY is not set. Add it to your .env file or Streamlit secrets before matching.")
 
 if run:
-    if not os.getenv("GROQ_API_KEY"):
-        st.error("GROQ_API_KEY is missing. Add it to a .env file (see .env.example) and restart.")
+    if not get_setting("GROQ_API_KEY"):
+        st.error("GROQ_API_KEY is missing. Add it to your .env file or Streamlit secrets and restart.")
     elif not resume_files or not jd_files:
         st.warning("Please upload at least one resume (PDF) and job description (TXT) in the sidebar.")
     else:

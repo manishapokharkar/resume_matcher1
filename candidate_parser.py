@@ -70,7 +70,7 @@ def extract_name(text):
         "address"
     ]
 
-    for line in lines[:15]:
+    for line in lines[:20]:
 
         line_lower = line.lower()
 
@@ -89,11 +89,9 @@ def extract_name(text):
         ):
             continue
 
-        # Names are usually short
         if len(line) > 60:
             continue
 
-        # Avoid lines containing too many special characters
         if len(
             re.findall(
                 r'[^a-zA-Z .]',
@@ -105,7 +103,6 @@ def extract_name(text):
         words = line.split()
 
         if 2 <= len(words) <= 5:
-
             return line
 
     return ""
@@ -119,55 +116,152 @@ def extract_skills(text):
 
     common_skills = [
 
+        # ----------------------------------------------------
+        # SOFTWARE / IT
+        # ----------------------------------------------------
+
         "Python",
         "Java",
         "JavaScript",
         "TypeScript",
-
         "React",
         "React.js",
         "Next.js",
         "Angular",
         "Vue.js",
-
         "HTML",
         "CSS",
         "Tailwind CSS",
         "Bootstrap",
-
         "Node.js",
         "Express",
-
         "Django",
         "Flask",
         "FastAPI",
-
         "PHP",
         "WordPress",
-
         "MySQL",
         "PostgreSQL",
         "MongoDB",
         "SQL",
-
         "Power BI",
         "Excel",
-
         "Snowflake",
         "dbt",
-
         "AWS",
         "Azure",
-
         "Docker",
         "Git",
-
         "REST API",
         "REST APIs",
-
         "Figma",
         "Selenium",
-        "Jenkins"
+        "Jenkins",
+
+        # ----------------------------------------------------
+        # PROCESS / CHEMICAL ENGINEERING
+        # ----------------------------------------------------
+
+        "Piping",
+        "Piping Line List",
+        "Piping Design",
+        "Process Engineering",
+        "Chemical Engineering",
+        "Process Design",
+        "Process Calculations",
+
+        # ----------------------------------------------------
+        # VALVES
+        # ----------------------------------------------------
+
+        "Valves",
+        "Control Valves",
+        "Control Valve Sizing",
+        "Valve Sizing",
+        "Valve Applications",
+        "Breather Valves",
+        "Pressure Relief Valves",
+        "PSV",
+        "PRV",
+        "RD",
+        "Rupture Disc",
+
+        # ----------------------------------------------------
+        # PUMPS
+        # ----------------------------------------------------
+
+        "Pumps",
+        "Pump Calculations",
+        "Pump Sizing",
+        "Pump Datasheet",
+
+        # ----------------------------------------------------
+        # EQUIPMENT
+        # ----------------------------------------------------
+
+        "Heat Exchangers",
+        "Heat Exchanger Design",
+        "Cooling Tower",
+        "Storage Tanks",
+        "Tank Design",
+        "Equipment Design",
+        "Equipment Datasheet",
+        "Process Datasheet",
+        "Instrument Process Datasheet",
+
+        # ----------------------------------------------------
+        # PIPING / PROCESS DOCUMENTS
+        # ----------------------------------------------------
+
+        "BFD",
+        "Block Flow Diagram",
+        "PFD",
+        "Process Flow Diagram",
+        "UFD",
+        "Utility Flow Diagram",
+        "P&ID",
+        "Piping and Instrumentation Diagram",
+
+        # ----------------------------------------------------
+        # SAFETY / RELIEF
+        # ----------------------------------------------------
+
+        "Hazardous Area Classification",
+        "HAC",
+        "Relief Events",
+        "Pressure Setting",
+        "Pressure Setting Criteria",
+        "Relief Valve",
+        "Venting",
+        "Venting Requirements",
+
+        # ----------------------------------------------------
+        # INDUSTRY STANDARDS
+        # ----------------------------------------------------
+
+        "API 2000",
+        "GPSA",
+        "API",
+        "ASME",
+        "ANSI",
+        "ASTM",
+        "NFPA",
+        "IEC",
+        "ISO",
+
+        # ----------------------------------------------------
+        # OTHER PROCESS ENGINEERING
+        # ----------------------------------------------------
+
+        "Air Moisture Separator",
+        "Separator Calculations",
+        "Moisture Separator",
+        "Process Equipment",
+        "Process Datasheets",
+        "Instrument Datasheets",
+        "Chemical Process",
+        "Process Industry",
+        "Chemical Industry"
     ]
 
     found_skills = []
@@ -180,9 +274,7 @@ def extract_skills(text):
 
             if skill not in found_skills:
 
-                found_skills.append(
-                    skill
-                )
+                found_skills.append(skill)
 
     return found_skills
 
@@ -233,15 +325,21 @@ def extract_education(text):
         "B.E.",
         "BCA",
         "B.Sc",
-
         "Master",
         "M.Tech",
         "MCA",
         "M.Sc",
         "MBA",
-
         "Bachelor's",
-        "Master's"
+        "Master's",
+
+        # Engineering
+        "Chemical Engineering",
+        "Mechanical Engineering",
+        "Civil Engineering",
+        "Electrical Engineering",
+        "Instrumentation Engineering",
+        "Process Engineering"
     ]
 
     found = []
@@ -254,9 +352,7 @@ def extract_education(text):
 
             if education not in found:
 
-                found.append(
-                    education
-                )
+                found.append(education)
 
     return found
 
@@ -285,6 +381,8 @@ def parse_candidate(file_path):
 
         "education": extract_education(text),
 
+        # IMPORTANT:
+        # Keep the COMPLETE resume text
         "resume_text": text
     }
 
@@ -357,7 +455,6 @@ def is_likely_resume(candidate):
         "experience",
         "work experience",
         "professional experience",
-
         "employment",
 
         "education",
@@ -370,15 +467,22 @@ def is_likely_resume(candidate):
         "certifications",
 
         "objective",
-
         "summary",
         "professional summary",
-
         "career objective",
 
         "achievements",
+        "responsibilities",
 
-        "responsibilities"
+        # Engineering resume sections
+        "professional experience",
+        "technical experience",
+        "process engineering",
+        "engineering experience",
+        "design experience",
+        "process design",
+        "piping",
+        "projects"
     ]
 
     section_count = 0
@@ -401,30 +505,36 @@ def is_likely_resume(candidate):
 
     job_terms = [
 
+        # IT
         "developer",
         "engineer",
         "analyst",
         "designer",
         "manager",
         "consultant",
-
         "intern",
-
         "software",
         "frontend",
         "backend",
-
         "full stack",
         "full-stack",
-
         "data analyst",
-
         "web developer",
-
         "programmer",
-
         "technology",
-        "technical"
+        "technical",
+
+        # Engineering
+        "process engineer",
+        "process engineering",
+        "chemical engineer",
+        "chemical engineering",
+        "mechanical engineer",
+        "piping engineer",
+        "design engineer",
+        "process design",
+        "plant design",
+        "engineering"
     ]
 
     for term in job_terms:
