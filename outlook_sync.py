@@ -1,23 +1,194 @@
 import os
-import base64
+import requests
 
 from outlook_auth import get_access_token
-from outlook_mail import get_messages, get_attachments
-from candidate_parser import parse_candidate, is_likely_resume
+from outlook_mail import get_job_emails, get_email_attachments
+from candidate_parser import parse_candidate
 from database.db import get_connection, create_table
 
 
-RESUME_FOLDER = "email_resumes"
+# ============================================================
+# SETTINGS
+# ============================================================
 
-ALLOWED_EXTENSIONS = [".pdf", ".docx"]
+EMAIL_RESUME_FOLDER = "email_resumes"
+
+ALLOWED_EXTENSIONS = [
+    ".pdf",
+    ".docx"
+]
 
 
-def save_candidate(candidate, file_path):
+# ============================================================
+# CREATE EMAIL RESUME FOLDER
+# ============================================================
+
+def create_email_resume_folder():
+
+    if not os.path.exists(
+        EMAIL_RESUME_FOLDER
+    ):
+
+        os.makedirs(
+            EMAIL_RESUME_FOLDER
+        )
+
+
+# ============================================================
+# CHECK IF RESUME ALREADY EXISTS
+# ============================================================
+
+def already_processed(
+    file_name
+):
+
     connection = get_connection()
     cursor = connection.cursor()
 
-    skills = ", ".join(candidate.get("skills", []))
-    education = ", ".join(candidate.get("education", []))
+    cursor.execute(
+        """
+        SELECT id
+        FROM candidates
+        WHERE resume_file = ?
+        AND source = 'email'
+        """,
+        (file_name,)
+    )
+
+    result = cursor.fetchone()
+
+    connection.close()
+
+    return result is not None
+
+
+# ============================================================
+# SAVE CANDIDATE
+# ============================================================
+
+def save_candidate(
+    candidate,
+    file_name
+):
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    # --------------------------------------------------------
+    # Skills
+    # --------------------------------------------------------
+
+    skills = candidate.get(
+        "skills",
+        []
+    )
+
+    if isinstance(
+        skills,
+        list
+    ):
+
+        skills = ", ".join(
+            str(skill).strip()
+            for skill in skills
+            if skill
+        )
+
+    elif skills is None:
+
+        skills = ""
+
+    else:
+
+        skills = str(
+            skills
+        )
+
+    # --------------------------------------------------------
+    # Education
+    # --------------------------------------------------------
+
+    education = candidate.get(
+        "education",
+        []
+    )
+
+    if isinstance(
+        education,
+        list
+    ):
+
+        education = ", ".join(
+            str(item).strip()
+            for item in education
+            if item
+        )
+
+    elif education is None:
+
+        education = ""
+
+    else:
+
+        education = str(
+            education
+        )
+
+    # --------------------------------------------------------
+    # Experience
+    # --------------------------------------------------------
+
+    experience = candidate.get(
+        "experience",
+        ""
+    )
+
+    if isinstance(
+        experience,
+        list
+    ):
+
+        experience = ", ".join(
+            str(item).strip()
+            for item in experience
+            if item
+        )
+
+    elif experience is None:
+
+        experience = ""
+
+    else:
+
+        experience = str(
+            experience
+        )
+
+    # --------------------------------------------------------
+    # Resume text
+    # --------------------------------------------------------
+
+    resume_text = candidate.get(
+        "resume_text",
+        ""
+    )
+
+    if resume_text is None:
+
+        resume_text = ""
+
+    elif not isinstance(
+        resume_text,
+        str
+    ):
+
+        resume_text = str(
+            resume_text
+        )
+
+    # --------------------------------------------------------
+    # Insert into database
+    # --------------------------------------------------------
 
     cursor.execute(
         """
@@ -30,62 +201,108 @@ def save_candidate(candidate, file_path):
             experience,
             education,
             resume_file,
-            resume_text
+            resume_text,
+            source
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            candidate.get("name", ""),
-            candidate.get("email", ""),
-            candidate.get("phone", ""),
+            candidate.get("name"),
+            candidate.get("email"),
+            candidate.get("phone"),
             skills,
-            candidate.get("experience", ""),
+            experience,
             education,
-            os.path.basename(file_path),
-            candidate.get("resume_text", "")
+            file_name,
+            resume_text,
+            "email"
         )
     )
 
     connection.commit()
+
     connection.close()
 
 
-def already_processed(file_name):
-    connection = get_connection()
-    cursor = connection.cursor()
+# ============================================================
+# DOWNLOAD ATTACHMENT
+# ============================================================
 
-    cursor.execute(
-        """
-        SELECT COUNT(*)
-        FROM candidates
-        WHERE resume_file = ?
-        """,
-        (file_name,)
+def download_attachment(
+    access_token,
+    message_id,
+    attachment_id,
+    file_name
+):
+
+    url = (
+        "https://graph.microsoft.com/v1.0"
+        f"/me/messages/{message_id}"
+        f"/attachments/{attachment_id}/$value"
     )
 
-    count = cursor.fetchone()[0]
+    headers = {
+        "Authorization":
+            f"Bearer {access_token}"
+    }
 
-    connection.close()
+    response = requests.get(
+        url,
+        headers=headers,
+        timeout=60
+    )
 
-    return count > 0
+    response.raise_for_status()
+
+    file_path = os.path.join(
+        EMAIL_RESUME_FOLDER,
+        file_name
+    )
+
+    with open(
+        file_path,
+        "wb"
+    ) as file:
+
+        file.write(
+            response.content
+        )
+
+    return file_path
 
 
-def sync_outlook_resumes(on_device_code=None):
+# ============================================================
+# SYNC OUTLOOK RESUMES
+# ============================================================
 
-    os.makedirs(RESUME_FOLDER, exist_ok=True)
+def sync_outlook_resumes(
+    on_device_code=None
+):
 
     create_table()
 
-    print("\nStarting Outlook resume sync...\n")
+    create_email_resume_folder()
 
-    # Microsoft authentication
-    token = get_access_token(
+    # --------------------------------------------------------
+    # GET MICROSOFT ACCESS TOKEN
+    # --------------------------------------------------------
+
+    access_token = get_access_token(
         on_device_code=on_device_code
     )
 
-    messages = get_messages(token)
+    # --------------------------------------------------------
+    # GET JOB EMAILS
+    # --------------------------------------------------------
 
-    print(f"Emails found: {len(messages)}")
+    emails = get_job_emails(
+        access_token
+    )
+
+    emails_scanned = len(
+        emails
+    )
 
     attachments_checked = 0
     documents_downloaded = 0
@@ -93,72 +310,156 @@ def sync_outlook_resumes(on_device_code=None):
     resumes_saved = 0
     rejected_count = 0
 
-    for message in messages:
+    print("=" * 60)
+    print("OUTLOOK RESUME SYNC")
+    print("=" * 60)
 
-        if not message.get("hasAttachments"):
+    print(
+        f"Job emails found: "
+        f"{emails_scanned}"
+    )
+
+    # --------------------------------------------------------
+    # PROCESS EMAILS
+    # --------------------------------------------------------
+
+    for email in emails:
+
+        message_id = email.get(
+            "id"
+        )
+
+        subject = email.get(
+            "subject",
+            ""
+        )
+
+        print()
+        print("-" * 60)
+
+        print(
+            f"Email: {subject}"
+        )
+
+        if not message_id:
+
             continue
 
-        attachments = get_attachments(
-            token,
-            message["id"]
-        )
+        # ----------------------------------------------------
+        # GET ATTACHMENTS
+        # ----------------------------------------------------
+
+        try:
+
+            attachments = (
+                get_email_attachments(
+                    access_token,
+                    message_id
+                )
+            )
+
+        except Exception as error:
+
+            print(
+                f"ERROR getting attachments: "
+                f"{error}"
+            )
+
+            rejected_count += 1
+
+            continue
+
+        # ----------------------------------------------------
+        # PROCESS ATTACHMENTS
+        # ----------------------------------------------------
 
         for attachment in attachments:
 
-            file_name = attachment.get("name", "")
+            attachments_checked += 1
+
+            attachment_id = attachment.get(
+                "id"
+            )
+
+            file_name = attachment.get(
+                "name",
+                ""
+            )
+
+            if not file_name:
+
+                continue
 
             extension = os.path.splitext(
                 file_name
             )[1].lower()
 
+            # ------------------------------------------------
+            # Only PDF / DOCX
+            # ------------------------------------------------
+
             if extension not in ALLOWED_EXTENSIONS:
-                continue
-
-            attachments_checked += 1
-
-            # Avoid duplicate database records
-            if already_processed(file_name):
 
                 print(
-                    f"Already processed: {file_name}"
+                    f"Skipped unsupported attachment: "
+                    f"{file_name}"
                 )
+
+                continue
+
+            # ------------------------------------------------
+            # Duplicate check
+            # ------------------------------------------------
+
+            if already_processed(
+                file_name
+            ):
 
                 already_processed_count += 1
 
-                continue
-
-            content_bytes = attachment.get(
-                "contentBytes"
-            )
-
-            if not content_bytes:
-
                 print(
-                    f"No content found: {file_name}"
+                    f"Already processed: "
+                    f"{file_name}"
                 )
 
                 continue
 
-            file_path = os.path.join(
-                RESUME_FOLDER,
-                file_name
-            )
+            # ------------------------------------------------
+            # Download attachment
+            # ------------------------------------------------
 
-            with open(file_path, "wb") as file:
+            try:
 
-                file.write(
-                    base64.b64decode(
-                        content_bytes
+                file_path = (
+                    download_attachment(
+                        access_token,
+                        message_id,
+                        attachment_id,
+                        file_name
                     )
                 )
 
-            documents_downloaded += 1
+                documents_downloaded += 1
 
-            print("\n" + "=" * 60)
-            print(
-                f"Processing: {file_name}"
-            )
-            print("=" * 60)
+                print(
+                    f"Downloaded: "
+                    f"{file_name}"
+                )
+
+            except Exception as error:
+
+                print(
+                    f"ERROR downloading "
+                    f"{file_name}: {error}"
+                )
+
+                rejected_count += 1
+
+                continue
+
+            # ------------------------------------------------
+            # Parse resume
+            # ------------------------------------------------
 
             try:
 
@@ -166,133 +467,117 @@ def sync_outlook_resumes(on_device_code=None):
                     file_path
                 )
 
-                print("\nExtracted information:")
-
                 print(
-                    "Name       :",
-                    candidate.get("name")
+                    f"Parsed name: "
+                    f"{candidate.get('name')}"
                 )
 
                 print(
-                    "Email      :",
-                    candidate.get("email")
+                    f"Parsed email: "
+                    f"{candidate.get('email')}"
                 )
 
                 print(
-                    "Phone      :",
-                    candidate.get("phone")
+                    f"Skills: "
+                    f"{candidate.get('skills', [])}"
                 )
-
-                print(
-                    "Skills     :",
-                    candidate.get("skills")
-                )
-
-                print(
-                    "Experience :",
-                    candidate.get("experience")
-                )
-
-                print(
-                    "Education  :",
-                    candidate.get("education")
-                )
-
-                resume_text = candidate.get(
-                    "resume_text",
-                    ""
-                )
-
-                print(
-                    "Text length:",
-                    len(resume_text)
-                )
-
-                is_resume = is_likely_resume(
-                    candidate
-                )
-
-                print(
-                    "Resume check:",
-                    "RESUME"
-                    if is_resume
-                    else "NOT A RESUME"
-                )
-
-                if is_resume:
-
-                    save_candidate(
-                        candidate,
-                        file_path
-                    )
-
-                    resumes_saved += 1
-
-                    print(
-                        "Saved to database: YES"
-                    )
-
-                else:
-
-                    rejected_count += 1
-
-                    print(
-                        "Saved to database: NO"
-                    )
-
-                    print(
-                        "Keeping file for inspection:",
-                        file_path
-                    )
 
             except Exception as error:
 
                 print(
-                    f"Error processing {file_name}: "
-                    f"{error}"
+                    f"ERROR parsing "
+                    f"{file_name}: {error}"
                 )
 
-    print("\n" + "=" * 60)
-    print("SYNC SUMMARY")
+                rejected_count += 1
+
+                continue
+
+            # ------------------------------------------------
+            # Save candidate
+            # ------------------------------------------------
+
+            try:
+
+                save_candidate(
+                    candidate,
+                    file_name
+                )
+
+                resumes_saved += 1
+
+                print(
+                    f"SUCCESS - Resume saved: "
+                    f"{file_name}"
+                )
+
+            except Exception as error:
+
+                print(
+                    f"ERROR saving "
+                    f"{file_name}: {error}"
+                )
+
+                rejected_count += 1
+
+    # --------------------------------------------------------
+    # FINAL REPORT
+    # --------------------------------------------------------
+
+    print()
+    print("=" * 60)
+    print("OUTLOOK SYNC COMPLETED")
     print("=" * 60)
 
     print(
-        "PDF/DOCX attachments:",
-        attachments_checked
+        f"Emails scanned: "
+        f"{emails_scanned}"
     )
 
     print(
-        "Documents downloaded:",
-        documents_downloaded
+        f"Attachments checked: "
+        f"{attachments_checked}"
     )
 
     print(
-        "Already processed:",
-        already_processed_count
+        f"Documents downloaded: "
+        f"{documents_downloaded}"
     )
 
     print(
-        "Resumes saved:",
-        resumes_saved
+        f"Already processed: "
+        f"{already_processed_count}"
     )
 
     print(
-        "Non-resumes rejected:",
-        rejected_count
+        f"Resumes saved: "
+        f"{resumes_saved}"
     )
 
-    print("\nSync finished.")
+    print(
+        f"Rejected: "
+        f"{rejected_count}"
+    )
 
-    # Return results to Streamlit
+    print("=" * 60)
+
     return {
-        "emails_scanned": len(messages),
-        "attachments_checked": attachments_checked,
-        "documents_downloaded": documents_downloaded,
-        "already_processed": already_processed_count,
-        "resumes_saved": resumes_saved,
-        "rejected_count": rejected_count
+
+        "emails_scanned":
+            emails_scanned,
+
+        "attachments_checked":
+            attachments_checked,
+
+        "documents_downloaded":
+            documents_downloaded,
+
+        "already_processed":
+            already_processed_count,
+
+        "resumes_saved":
+            resumes_saved,
+
+        "rejected_count":
+            rejected_count
     }
-
-
-if __name__ == "__main__":
-    sync_outlook_resumes()

@@ -34,7 +34,8 @@ Get a free Groq API key at <https://console.groq.com/keys> and open
    `.streamlit/secrets.toml`, API keys, or resume files containing personal
    information.
 2. Sign in at <https://share.streamlit.io/> and choose **Create app**.
-3. Select the repository and branch, and set the main file path to `app.py`.
+3. Select the repository and branch. Set the main file path to `app.py` for the
+   resume-upload matcher, or `app_outlook.py` for the Outlook integration app.
 4. In the app's **Settings > Secrets**, add:
 
    ```toml

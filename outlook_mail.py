@@ -1,512 +1,361 @@
 import requests
-
 from datetime import datetime, timedelta, timezone
 
-from outlook_auth import get_access_token
 
-
-GRAPH_URL = "https://graph.microsoft.com/v1.0"
+GRAPH_BASE_URL = (
+    "https://graph.microsoft.com/v1.0"
+)
 
 
 # ============================================================
-# GET EMAILS
+# GET YESTERDAY'S JOB EMAILS
 # ============================================================
 
-def get_messages(token):
-    """
-    Get Outlook emails received from yesterday onward.
-    """
+def get_job_emails(
+    access_token
+):
 
-    headers = {
-        "Authorization": f"Bearer {token}"
-    }
+    # --------------------------------------------------------
+    # Yesterday 00:00 UTC
+    # --------------------------------------------------------
 
-    # Current UTC time
-    now_utc = datetime.now(timezone.utc)
-
-    # Start of today
-    today_start = now_utc.replace(
+    yesterday = (
+        datetime.now(timezone.utc)
+        - timedelta(days=1)
+    ).replace(
         hour=0,
         minute=0,
         second=0,
         microsecond=0
     )
 
-    # Start of yesterday
-    yesterday_start = today_start - timedelta(days=1)
-
-    yesterday_start_iso = (
-        yesterday_start
-        .isoformat()
-        .replace("+00:00", "Z")
+    yesterday_string = (
+        yesterday.isoformat()
+        .replace(
+            "+00:00",
+            "Z"
+        )
     )
 
-    url = f"{GRAPH_URL}/me/messages"
+    url = (
+        f"{GRAPH_BASE_URL}"
+        "/me/mailFolders/inbox/messages"
+    )
 
     params = {
-        "$select": (
-            "id,"
-            "subject,"
-            "from,"
-            "receivedDateTime,"
-            "hasAttachments,"
-            "bodyPreview"
-        ),
-        "$filter": (
+
+        "$top": 50,
+
+        "$select":
+            "id,subject,from,receivedDateTime,"
+            "hasAttachments,bodyPreview,body",
+
+        "$filter":
             f"receivedDateTime ge "
-            f"{yesterday_start_iso}"
-        ),
-        "$orderby": "receivedDateTime desc",
-        "$top": "50"
+            f"{yesterday_string}"
     }
 
-    messages = []
+    headers = {
+
+        "Authorization":
+            f"Bearer {access_token}",
+
+        "Content-Type":
+            "application/json"
+    }
+
+    all_emails = []
+
+    # --------------------------------------------------------
+    # Pagination
+    # --------------------------------------------------------
 
     while url:
 
         response = requests.get(
             url,
             headers=headers,
-            params=params
+            params=params,
+            timeout=60
         )
 
-        if response.status_code != 200:
-
-            print(
-                "Error getting emails:",
-                response.status_code
-            )
-
-            print(response.text)
-
-            return messages
+        response.raise_for_status()
 
         data = response.json()
 
-        messages.extend(
-            data.get("value", [])
+        emails = data.get(
+            "value",
+            []
         )
 
-        # Get next page if available
+        all_emails.extend(
+            emails
+        )
+
+        # ----------------------------------------------------
+        # Next page
+        # ----------------------------------------------------
+
         url = data.get(
             "@odata.nextLink"
         )
 
-        # nextLink already contains parameters
-        params = None
+        # Parameters are already included
+        # inside nextLink.
 
-    return messages
+        params = {}
 
+    # --------------------------------------------------------
+    # Filter job-related emails
+    # --------------------------------------------------------
 
-# ============================================================
-# GET ATTACHMENTS
-# ============================================================
+    job_keywords = [
 
-def get_attachments(token, message_id):
-    """
-    Get all attachments for one Outlook email.
-    """
-
-    url = (
-        f"{GRAPH_URL}/me/messages/"
-        f"{message_id}/attachments"
-    )
-
-    headers = {
-        "Authorization": f"Bearer {token}"
-    }
-
-    response = requests.get(
-        url,
-        headers=headers
-    )
-
-    if response.status_code != 200:
-
-        print(
-            "Error getting attachments:",
-            response.status_code
-        )
-
-        print(response.text)
-
-        return []
-
-    data = response.json()
-
-    return data.get(
-        "value",
-        []
-    )
-
-
-# ============================================================
-# GET EMAIL TEXT
-# ============================================================
-
-def get_message_text(message):
-
-    subject = message.get(
-        "subject",
-        ""
-    )
-
-    body_preview = message.get(
-        "bodyPreview",
-        ""
-    )
-
-    return (
-        str(subject)
-        + " "
-        + str(body_preview)
-    ).strip()
-
-
-# ============================================================
-# GET SENDER EMAIL
-# ============================================================
-
-def get_sender_email(message):
-
-    try:
-
-        return (
-            message
-            .get("from", {})
-            .get("emailAddress", {})
-            .get("address", "")
-        )
-
-    except Exception:
-
-        return ""
-
-
-# ============================================================
-# GET SENDER NAME
-# ============================================================
-
-def get_sender_name(message):
-
-    try:
-
-        return (
-            message
-            .get("from", {})
-            .get("emailAddress", {})
-            .get("name", "")
-        )
-
-    except Exception:
-
-        return ""
-
-
-# ============================================================
-# GET RECEIVED DATE
-# ============================================================
-
-def get_received_date(message):
-
-    return message.get(
-        "receivedDateTime",
-        ""
-    )
-
-
-# ============================================================
-# OPTIONAL JOB EMAIL CHECK
-# ============================================================
-
-def analyze_job_email(message):
-
-    text = get_message_text(
-        message
-    ).lower()
-
-    keywords = [
-        "job",
-        "career",
-        "vacancy",
-        "opening",
-        "position",
-        "hiring",
-        "recruitment",
-        "application",
-        "interview",
-        "candidate",
         "resume",
         "cv",
+        "job",
+        "application",
+        "applying",
+        "candidate",
+        "vacancy",
+        "position",
+        "opening",
+        "career",
+        "recruitment",
+        "hiring",
+        "interview",
         "developer",
         "engineer",
-        "analyst"
+        "analyst",
+        "software",
+        "frontend",
+        "backend",
+        "python",
+        "react",
+        "data analyst"
     ]
 
-    matched_keywords = []
+    application_phrases = [
 
-    for keyword in keywords:
+        "job application",
+        "job opportunity",
+        "application for",
+        "applying for",
+        "resume attached",
+        "cv attached",
+        "candidate application",
+        "application received",
+        "new application"
+    ]
 
-        if keyword in text:
+    job_emails = []
 
-            matched_keywords.append(
-                keyword
+    for email in all_emails:
+
+        subject = (
+            email.get(
+                "subject",
+                ""
             )
-
-    return {
-        "is_job_related": len(
-            matched_keywords
-        ) > 0,
-
-        "score": len(
-            matched_keywords
-        ),
-
-        "matched_keywords": matched_keywords
-    }
-
-
-# ============================================================
-# SIMPLE JOB CHECK
-# ============================================================
-
-def is_job_related(message):
-
-    result = analyze_job_email(
-        message
-    )
-
-    return result["is_job_related"]
-
-
-# ============================================================
-# ATTACHMENT CHECK
-# ============================================================
-
-def get_attachment_signal(attachments):
-
-    pdf_docx = []
-
-    other_files = []
-
-    for attachment in attachments:
-
-        name = attachment.get(
-            "name",
-            ""
+            or ""
         )
 
-        name_lower = name.lower()
-
-        if (
-            name_lower.endswith(".pdf")
-            or name_lower.endswith(".docx")
-        ):
-
-            pdf_docx.append(
-                name
+        body_preview = (
+            email.get(
+                "bodyPreview",
+                ""
             )
+            or ""
+        )
 
-        else:
-
-            other_files.append(
-                name
+        body = (
+            email.get(
+                "body",
+                {}
             )
-
-    return {
-        "resume_attachments": pdf_docx,
-        "other_attachments": other_files
-    }
-
-
-# ============================================================
-# TEST
-# ============================================================
-
-if __name__ == "__main__":
-
-    print()
-    print("======================================")
-    print("OUTLOOK MAIL TEST")
-    print("======================================")
-
-    print()
-    print("Authenticating with Microsoft...")
-
-    try:
-
-        token = get_access_token()
-
-        print(
-            "Authentication successful."
+            or {}
         )
 
-    except Exception as error:
-
-        print(
-            "Authentication failed:"
+        body_content = (
+            body.get(
+                "content",
+                ""
+            )
+            or ""
         )
 
-        print(error)
+        combined_text = (
+            subject
+            + " "
+            + body_preview
+            + " "
+            + body_content
+        ).lower()
 
-        raise SystemExit
+        score = 0
 
+        # ----------------------------------------------------
+        # Subject keyword
+        # ----------------------------------------------------
 
-    print()
-    print(
-        "Fetching emails from yesterday onward..."
-    )
-
-    messages = get_messages(
-        token
-    )
-
-    print()
-    print(
-        "Messages found:",
-        len(messages)
-    )
-
-
-    print()
-    print("======================================")
-    print("EMAILS")
-    print("======================================")
-
-
-    attachment_messages = 0
-
-
-    for index, message in enumerate(
-        messages,
-        start=1
-    ):
-
-        subject = message.get(
-            "subject",
-            "(No Subject)"
+        subject_lower = (
+            subject.lower()
         )
 
-        sender = get_sender_email(
-            message
-        )
+        for keyword in job_keywords:
 
-        received = get_received_date(
-            message
-        )
+            if keyword in subject_lower:
 
-        has_attachments = message.get(
+                score += 2
+
+                break
+
+        # ----------------------------------------------------
+        # Application phrase
+        # ----------------------------------------------------
+
+        for phrase in application_phrases:
+
+            if phrase in combined_text:
+
+                score += 3
+
+                break
+
+        # ----------------------------------------------------
+        # Body job keywords
+        # ----------------------------------------------------
+
+        body_matches = 0
+
+        for keyword in job_keywords:
+
+            if keyword in combined_text:
+
+                body_matches += 1
+
+        if body_matches >= 3:
+
+            score += 2
+
+        # ----------------------------------------------------
+        # Must have attachment
+        # ----------------------------------------------------
+
+        has_attachments = email.get(
             "hasAttachments",
             False
         )
 
-        if has_attachments:
-
-            attachment_messages += 1
-
-        print()
-        print(
-            f"{index}. {subject}"
-        )
-
-        print(
-            "   From:",
-            sender
-        )
-
-        print(
-            "   Received:",
-            received
-        )
-
-        print(
-            "   Has attachments:",
-            has_attachments
-        )
-
-
-    print()
-    print("======================================")
-    print("SUMMARY")
-    print("======================================")
-
-    print(
-        "Total messages:",
-        len(messages)
-    )
-
-    print(
-        "Messages with attachments:",
-        attachment_messages
-    )
-
-
-    print()
-    print("======================================")
-    print("ATTACHMENT DETAILS")
-    print("======================================")
-
-
-    for message in messages:
-
-        if not message.get(
-            "hasAttachments",
-            False
-        ):
+        if not has_attachments:
 
             continue
 
-        subject = message.get(
-            "subject",
-            "(No Subject)"
+        # ----------------------------------------------------
+        # Final job email decision
+        # ----------------------------------------------------
+
+        if score >= 3:
+
+            email["_job_score"] = score
+
+            job_emails.append(
+                email
+            )
+
+    return job_emails
+
+
+# ============================================================
+# GET EMAIL ATTACHMENTS
+# ============================================================
+
+def get_email_attachments(
+    access_token,
+    message_id
+):
+
+    url = (
+        f"{GRAPH_BASE_URL}"
+        f"/me/messages/{message_id}"
+        "/attachments"
+    )
+
+    headers = {
+
+        "Authorization":
+            f"Bearer {access_token}",
+
+        "Content-Type":
+            "application/json"
+    }
+
+    all_attachments = []
+
+    while url:
+
+        response = requests.get(
+            url,
+            headers=headers,
+            params={
+                "$top": 50
+            },
+            timeout=60
         )
 
-        print()
-        print(
-            "Email:",
-            subject
+        response.raise_for_status()
+
+        data = response.json()
+
+        attachments = data.get(
+            "value",
+            []
         )
 
-        attachments = get_attachments(
-            token,
-            message.get("id")
+        all_attachments.extend(
+            attachments
         )
 
-        for attachment in attachments:
+        url = data.get(
+            "@odata.nextLink"
+        )
 
-            name = attachment.get(
+    # --------------------------------------------------------
+    # Return only file attachments
+    # --------------------------------------------------------
+
+    file_attachments = []
+
+    for attachment in all_attachments:
+
+        attachment_type = (
+            attachment.get(
+                "@odata.type",
+                ""
+            )
+        )
+
+        file_name = (
+            attachment.get(
                 "name",
                 ""
             )
+            or ""
+        )
 
-            content_type = attachment.get(
-                "contentType",
-                ""
+        # Ignore inline images and other
+        # non-file attachments.
+
+        if (
+            attachment_type
+            == "#microsoft.graph.fileAttachment"
+        ):
+
+            attachment["name"] = file_name
+
+            file_attachments.append(
+                attachment
             )
 
-            size = attachment.get(
-                "size",
-                0
-            )
+    return file_attachments
 
-            print(
-                "   File:",
-                name
-            )
-
-            print(
-                "   Type:",
-                content_type
-            )
-
-            print(
-                "   Size:",
-                size,
-                "bytes"
-            )
-
-
-    print()
-    print("======================================")
-    print("TEST COMPLETE")
-    print("======================================")

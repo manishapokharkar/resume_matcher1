@@ -1,6 +1,6 @@
 import requests
 
-from outlook_auth import get_access_token
+import outlook_auth
 from outlook_mail import get_messages, is_job_related
 
 
@@ -9,7 +9,7 @@ GRAPH_URL = "https://graph.microsoft.com/v1.0"
 
 def get_attachments(message_id, on_device_code=None):
 
-    token = get_access_token(
+    token = outlook_auth.get_access_token(
         on_device_code=on_device_code
     )
 
