@@ -14,12 +14,21 @@ SCOPES = [
     "Mail.Read"
 ]
 
-def get_access_token():
+_msal_app = None
 
-    app = msal.PublicClientApplication(
-        CLIENT_ID,
-        authority=AUTHORITY
-    )
+def get_access_token(on_device_code=None):
+    global _msal_app
+
+    if not CLIENT_ID or not TENANT_ID:
+        raise RuntimeError("Set CLIENT_ID and TENANT_ID in your .env file before connecting Outlook.")
+
+    if _msal_app is None:
+        _msal_app = msal.PublicClientApplication(
+            CLIENT_ID,
+            authority=AUTHORITY
+        )
+
+    app = _msal_app
 
     # Try to use an existing login first
     accounts = app.get_accounts()
@@ -43,7 +52,10 @@ def get_access_token():
             "Unable to start device authentication"
         )
 
-    print(flow["message"])
+    if on_device_code:
+        on_device_code(flow["message"])
+    else:
+        print(flow["message"])
 
     result = app.acquire_token_by_device_flow(flow)
 

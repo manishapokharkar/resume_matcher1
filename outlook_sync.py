@@ -1,69 +1,28 @@
 import os
 import base64
-import requests
 
 from outlook_auth import get_access_token
-from outlook_mail import get_messages, is_job_related
-from candidate_parser import parse_candidate
+from outlook_mail import get_messages, get_attachments
+from candidate_parser import parse_candidate, is_likely_resume
 from database.db import get_connection, create_table
 
 
-GRAPH_URL = "https://graph.microsoft.com/v1.0"
-DOWNLOAD_FOLDER = "email_resumes"
+RESUME_FOLDER = "email_resumes"
 
 ALLOWED_EXTENSIONS = [".pdf", ".docx"]
 
 
-def get_attachments(message_id):
-    token = get_access_token()
-
-    headers = {
-        "Authorization": f"Bearer {token}"
-    }
-
-    url = f"{GRAPH_URL}/me/messages/{message_id}/attachments"
-
-    response = requests.get(
-        url,
-        headers=headers
-    )
-
-    response.raise_for_status()
-
-    return response.json()["value"]
-
-
-def candidate_exists(resume_file):
+def save_candidate(candidate, file_path):
     connection = get_connection()
     cursor = connection.cursor()
 
-    cursor.execute(
-        """
-        SELECT id
-        FROM candidates
-        WHERE resume_file = ?
-        """,
-        (resume_file,)
-    )
-
-    result = cursor.fetchone()
-
-    connection.close()
-
-    return result is not None
-
-
-def save_candidate(candidate, resume_file):
-
-    connection = get_connection()
-    cursor = connection.cursor()
-
-    skills = ", ".join(candidate["skills"])
-    education = ", ".join(candidate["education"])
+    skills = ", ".join(candidate.get("skills", []))
+    education = ", ".join(candidate.get("education", []))
 
     cursor.execute(
         """
-        INSERT INTO candidates (
+        INSERT INTO candidates
+        (
             name,
             email,
             phone,
@@ -76,14 +35,14 @@ def save_candidate(candidate, resume_file):
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            candidate["name"],
-            candidate["email"],
-            candidate["phone"],
+            candidate.get("name", ""),
+            candidate.get("email", ""),
+            candidate.get("phone", ""),
             skills,
-            candidate["experience"],
+            candidate.get("experience", ""),
             education,
-            resume_file,
-            candidate["resume_text"]
+            os.path.basename(file_path),
+            candidate.get("resume_text", "")
         )
     )
 
@@ -91,47 +50,62 @@ def save_candidate(candidate, resume_file):
     connection.close()
 
 
-def sync_outlook():
+def already_processed(file_name):
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute(
+        """
+        SELECT COUNT(*)
+        FROM candidates
+        WHERE resume_file = ?
+        """,
+        (file_name,)
+    )
+
+    count = cursor.fetchone()[0]
+
+    connection.close()
+
+    return count > 0
+
+
+def sync_outlook_resumes(on_device_code=None):
+
+    os.makedirs(RESUME_FOLDER, exist_ok=True)
 
     create_table()
 
-    os.makedirs(
-        DOWNLOAD_FOLDER,
-        exist_ok=True
+    print("\nStarting Outlook resume sync...\n")
+
+    # Microsoft authentication
+    token = get_access_token(
+        on_device_code=on_device_code
     )
 
-    messages = get_messages()
+    messages = get_messages(token)
 
-    downloaded_count = 0
-    skipped_count = 0
-    saved_count = 0
+    print(f"Emails found: {len(messages)}")
+
+    attachments_checked = 0
+    documents_downloaded = 0
+    already_processed_count = 0
+    resumes_saved = 0
+    rejected_count = 0
 
     for message in messages:
 
-        if not is_job_related(message):
+        if not message.get("hasAttachments"):
             continue
 
-        message_id = message["id"]
-
-        subject = message.get(
-            "subject",
-            ""
-        )
-
-        print(
-            f"\nChecking email: {subject}"
-        )
-
         attachments = get_attachments(
-            message_id
+            token,
+            message["id"]
         )
 
         for attachment in attachments:
 
-            file_name = attachment.get(
-                "name",
-                ""
-            )
+            file_name = attachment.get("name", "")
 
             extension = os.path.splitext(
                 file_name
@@ -140,14 +114,16 @@ def sync_outlook():
             if extension not in ALLOWED_EXTENSIONS:
                 continue
 
-            if candidate_exists(file_name):
+            attachments_checked += 1
+
+            # Avoid duplicate database records
+            if already_processed(file_name):
 
                 print(
-                    "Already processed:",
-                    file_name
+                    f"Already processed: {file_name}"
                 )
 
-                skipped_count += 1
+                already_processed_count += 1
 
                 continue
 
@@ -156,17 +132,19 @@ def sync_outlook():
             )
 
             if not content_bytes:
+
+                print(
+                    f"No content found: {file_name}"
+                )
+
                 continue
 
             file_path = os.path.join(
-                DOWNLOAD_FOLDER,
+                RESUME_FOLDER,
                 file_name
             )
 
-            with open(
-                file_path,
-                "wb"
-            ) as file:
+            with open(file_path, "wb") as file:
 
                 file.write(
                     base64.b64decode(
@@ -174,12 +152,13 @@ def sync_outlook():
                     )
                 )
 
-            downloaded_count += 1
+            documents_downloaded += 1
 
+            print("\n" + "=" * 60)
             print(
-                "Downloaded:",
-                file_name
+                f"Processing: {file_name}"
             )
+            print("=" * 60)
 
             try:
 
@@ -187,60 +166,133 @@ def sync_outlook():
                     file_path
                 )
 
-                save_candidate(
-                    candidate,
-                    file_name
-                )
-
-                saved_count += 1
+                print("\nExtracted information:")
 
                 print(
-                    "Candidate saved:",
-                    candidate["name"]
+                    "Name       :",
+                    candidate.get("name")
                 )
+
+                print(
+                    "Email      :",
+                    candidate.get("email")
+                )
+
+                print(
+                    "Phone      :",
+                    candidate.get("phone")
+                )
+
+                print(
+                    "Skills     :",
+                    candidate.get("skills")
+                )
+
+                print(
+                    "Experience :",
+                    candidate.get("experience")
+                )
+
+                print(
+                    "Education  :",
+                    candidate.get("education")
+                )
+
+                resume_text = candidate.get(
+                    "resume_text",
+                    ""
+                )
+
+                print(
+                    "Text length:",
+                    len(resume_text)
+                )
+
+                is_resume = is_likely_resume(
+                    candidate
+                )
+
+                print(
+                    "Resume check:",
+                    "RESUME"
+                    if is_resume
+                    else "NOT A RESUME"
+                )
+
+                if is_resume:
+
+                    save_candidate(
+                        candidate,
+                        file_path
+                    )
+
+                    resumes_saved += 1
+
+                    print(
+                        "Saved to database: YES"
+                    )
+
+                else:
+
+                    rejected_count += 1
+
+                    print(
+                        "Saved to database: NO"
+                    )
+
+                    print(
+                        "Keeping file for inspection:",
+                        file_path
+                    )
 
             except Exception as error:
 
                 print(
-                    "Error parsing:",
-                    file_name,
-                    error
+                    f"Error processing {file_name}: "
+                    f"{error}"
                 )
 
-    return {
-        "downloaded": downloaded_count,
-        "skipped": skipped_count,
-        "saved": saved_count
-    }
-
-
-if __name__ == "__main__":
+    print("\n" + "=" * 60)
+    print("SYNC SUMMARY")
+    print("=" * 60)
 
     print(
-        "\nStarting Outlook sync...\n"
-    )
-
-    result = sync_outlook()
-
-    print(
-        "\n=============================="
+        "PDF/DOCX attachments:",
+        attachments_checked
     )
 
     print(
-        "Outlook Sync Completed"
-    )
-
-    print(
-        "Downloaded:",
-        result["downloaded"]
+        "Documents downloaded:",
+        documents_downloaded
     )
 
     print(
         "Already processed:",
-        result["skipped"]
+        already_processed_count
     )
 
     print(
-        "Candidates saved:",
-        result["saved"]
+        "Resumes saved:",
+        resumes_saved
     )
+
+    print(
+        "Non-resumes rejected:",
+        rejected_count
+    )
+
+    print("\nSync finished.")
+
+    # Return results to Streamlit
+    return {
+        "emails_scanned": len(messages),
+        "attachments_checked": attachments_checked,
+        "documents_downloaded": documents_downloaded,
+        "already_processed": already_processed_count,
+        "resumes_saved": resumes_saved,
+        "rejected_count": rejected_count
+    }
+
+
+if __name__ == "__main__":
+    sync_outlook_resumes()

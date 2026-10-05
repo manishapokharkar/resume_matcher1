@@ -1,9 +1,11 @@
-from database.db import get_connection
+from candidate_parser import is_likely_resume
+from database.db import create_table, get_connection
 from matching.resume_matcher import match_resume
 
 
 def get_candidates():
 
+    create_table()
     connection = get_connection()
 
     cursor = connection.cursor()
@@ -17,7 +19,8 @@ def get_candidates():
             skills,
             experience,
             education,
-            resume_file
+            resume_file,
+            resume_text
         FROM candidates
     """)
 
@@ -46,6 +49,9 @@ def match_candidates(job_description):
     results = []
 
     for candidate in candidates:
+
+        if not is_likely_resume(dict(candidate)):
+            continue
 
         candidate_skills = convert_skills(
             candidate["skills"]
