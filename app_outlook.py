@@ -3,6 +3,7 @@ import pandas as pd
 import os
 import io
 import zipfile
+import msal
 
 from match_candidates import match_candidates
 from outlook_sync import sync_outlook_resumes
@@ -10,6 +11,7 @@ from database.db import get_connection
 from folder_sync import scan_resume_folder
 
 
+st.write("MSAL version:", msal.__version__)
 # ============================================================
 # PAGE CONFIGURATION
 # ============================================================
