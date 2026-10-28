@@ -1,6 +1,10 @@
 import re
 
-from database.db import create_table, get_connection
+from database.db import (
+    create_table,
+    get_connection
+)
+
 from matching.resume_matcher import match_resume
 
 
@@ -15,7 +19,8 @@ def get_candidates():
     connection = get_connection()
     cursor = connection.cursor()
 
-    cursor.execute("""
+    cursor.execute(
+        """
         SELECT
             id,
             name,
@@ -25,10 +30,13 @@ def get_candidates():
             experience,
             education,
             resume_file,
-            resume_text
+            resume_text,
+            source,
+            created_at
         FROM candidates
         ORDER BY id DESC
-    """)
+        """
+    )
 
     candidates = cursor.fetchall()
 
@@ -46,9 +54,17 @@ def convert_skills(skills_text):
     if not skills_text:
         return []
 
+    if isinstance(
+        skills_text,
+        list
+    ):
+        return skills_text
+
     return [
         skill.strip()
-        for skill in skills_text.split(",")
+        for skill in str(
+            skills_text
+        ).split(",")
         if skill.strip()
     ]
 
@@ -62,9 +78,10 @@ def normalize_text(text):
     if not text:
         return ""
 
-    text = text.lower()
+    text = str(text).lower()
 
     # Normalize common variations
+
     text = text.replace(
         "piping & instrumentation diagram",
         "p&id"
@@ -91,8 +108,8 @@ def normalize_text(text):
     )
 
     text = re.sub(
-        r'\s+',
-        ' ',
+        r"\s+",
+        " ",
         text
     )
 
@@ -109,7 +126,6 @@ def extract_jd_terms(job_description):
         job_description
     )
 
-    # Important engineering / technical phrases
     important_terms = [
 
         "piping line list",
@@ -172,7 +188,7 @@ def extract_jd_terms(job_description):
                 found_terms.append(term)
 
     # --------------------------------------------------------
-    # Also look for normal words from JD
+    # Normal words from JD
     # --------------------------------------------------------
 
     stop_words = {
@@ -207,7 +223,7 @@ def extract_jd_terms(job_description):
     }
 
     words = re.findall(
-        r'\b[a-zA-Z0-9&]+\b',
+        r"\b[a-zA-Z0-9&]+\b",
         normalized_jd
     )
 
@@ -265,7 +281,8 @@ def calculate_text_match(
             missing.append(term)
 
     score = (
-        len(matched) /
+        len(matched)
+        /
         len(jd_terms)
     ) * 100
 
@@ -280,7 +297,9 @@ def calculate_text_match(
 # MATCH CANDIDATES
 # ============================================================
 
-def match_candidates(job_description):
+def match_candidates(
+    job_description
+):
 
     candidates = get_candidates()
 
@@ -327,7 +346,9 @@ def match_candidates(job_description):
             job_description
         )
 
-        text_score = text_match["score"]
+        text_score = text_match[
+            "score"
+        ]
 
         # ----------------------------------------------------
         # Combined score
@@ -347,7 +368,7 @@ def match_candidates(job_description):
         )
 
         # ----------------------------------------------------
-        # Combine matched skills/terms
+        # Combine matched items
         # ----------------------------------------------------
 
         matched_items = []
@@ -371,7 +392,7 @@ def match_candidates(job_description):
                 matched_items.append(item)
 
         # ----------------------------------------------------
-        # Combine missing terms
+        # Combine missing items
         # ----------------------------------------------------
 
         missing_items = []
@@ -400,35 +421,51 @@ def match_candidates(job_description):
 
         results.append({
 
-            "id": candidate["id"],
+            "id":
+                candidate["id"],
 
-            "name": candidate["name"],
+            "name":
+                candidate["name"] or "",
 
-            "email": candidate["email"],
+            "email":
+                candidate["email"] or "",
 
-            "phone": candidate["phone"],
+            "phone":
+                candidate["phone"] or "",
 
-            "skills": candidate["skills"],
+            "skills":
+                candidate["skills"] or "",
 
-            "experience": candidate["experience"],
+            "experience":
+                candidate["experience"] or "",
 
-            "education": candidate["education"],
+            "education":
+                candidate["education"] or "",
 
-            "resume_file": candidate["resume_file"],
+            "resume_file":
+                candidate["resume_file"] or "",
 
-            "score": combined_score,
+            "source":
+                candidate["source"] or "email",
 
-            "matched_skills": ", ".join(
-                matched_items
-            ),
+            "score":
+                combined_score,
 
-            "missing_skills": ", ".join(
-                missing_items
-            ),
+            "matched_skills":
+                ", ".join(
+                    matched_items
+                ),
 
-            "skill_score": skill_score,
+            "missing_skills":
+                ", ".join(
+                    missing_items
+                ),
 
-            "text_score": text_score
+            "skill_score":
+                skill_score,
+
+            "text_score":
+                text_score
         })
 
     # --------------------------------------------------------

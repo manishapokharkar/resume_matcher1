@@ -1,10 +1,21 @@
 import os
 import requests
+from urllib.parse import quote
 
 from outlook_auth import get_access_token
-from outlook_mail import get_job_emails, get_email_attachments
-from candidate_parser import parse_candidate
-from database.db import get_connection, create_table
+from outlook_mail import get_email_attachments
+
+from candidate_parser import (
+    parse_candidate,
+    is_likely_resume
+)
+
+from database.db import (
+    create_table,
+    get_connection,
+    candidate_exists,
+    insert_candidate
+)
 
 
 # ============================================================
@@ -19,14 +30,84 @@ ALLOWED_EXTENSIONS = {
 }
 
 
+GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
+OUTLOOK_RESUME_FOLDER_NAME = "Resumes"
+
+
+def graph_get_all_pages(access_token, url):
+    """Fetch every page returned by Microsoft Graph."""
+    headers = {"Authorization": f"Bearer {access_token}"}
+    results = []
+    while url:
+        response = requests.get(url, headers=headers, timeout=60)
+        response.raise_for_status()
+        payload = response.json()
+        results.extend(payload.get("value", []))
+        url = payload.get("@odata.nextLink")
+    return results
+
+
+def find_mail_folder(access_token, target_name=OUTLOOK_RESUME_FOLDER_NAME):
+    """Find a mail folder by display name, including nested folders."""
+    headers = {"Authorization": f"Bearer {access_token}"}
+    queue = [f"{GRAPH_BASE_URL}/me/mailFolders?$top=100"]
+    visited_urls = set()
+    target = target_name.strip().casefold()
+
+    while queue:
+        url = queue.pop(0)
+        if url in visited_urls:
+            continue
+        visited_urls.add(url)
+
+        while url:
+            response = requests.get(url, headers=headers, timeout=60)
+            response.raise_for_status()
+            payload = response.json()
+
+            for folder in payload.get("value", []):
+                if str(folder.get("displayName", "")).strip().casefold() == target:
+                    return folder
+                folder_id = folder.get("id")
+                if folder_id:
+                    queue.append(
+                        f"{GRAPH_BASE_URL}/me/mailFolders/"
+                        f"{quote(folder_id, safe='')}/childFolders?$top=100"
+                    )
+            url = payload.get("@odata.nextLink")
+    return None
+
+
+def get_resume_folder_emails(access_token):
+    """Return messages with attachments from the Outlook 'Resumes' folder only."""
+    folder = find_mail_folder(access_token)
+    if not folder:
+        raise RuntimeError(
+            "Could not find an Outlook mail folder named "
+            f"'{OUTLOOK_RESUME_FOLDER_NAME}'. Create or rename the folder "
+            "in Outlook, then run the sync again."
+        )
+
+    folder_id = quote(folder["id"], safe="")
+    url = (
+        f"{GRAPH_BASE_URL}/me/mailFolders/{folder_id}/messages"
+        "?$select=id,subject,hasAttachments,receivedDateTime"
+        "&$top=100"
+    )
+    emails = graph_get_all_pages(access_token, url)
+    return [email for email in emails if email.get("hasAttachments", False)]
+
+
+
 # ============================================================
 # CREATE EMAIL RESUME FOLDER
 # ============================================================
 
 def create_email_resume_folder():
+
     os.makedirs(
         EMAIL_RESUME_FOLDER,
-        exist_ok=True,
+        exist_ok=True
     )
 
 
@@ -35,15 +116,6 @@ def create_email_resume_folder():
 # ============================================================
 
 def normalize_resume_path(file_path):
-    """
-    Store a portable relative path.
-
-    Example:
-        email_resumes/Maya_Rodriguez.pdf
-
-    We do NOT store an absolute Windows path because
-    Streamlit Cloud uses a different filesystem.
-    """
 
     if not file_path:
         return ""
@@ -60,10 +132,6 @@ def normalize_resume_path(file_path):
 # ============================================================
 
 def get_file_name(file_name):
-    """
-    Prevent accidental directory traversal and ensure that
-    only the attachment filename is used.
-    """
 
     if not file_name:
         return ""
@@ -78,30 +146,21 @@ def get_file_name(file_name):
 # ============================================================
 
 def already_processed(file_name):
-    """
-    Backward-compatible duplicate detection.
 
-    Older records may contain:
-
-        resume.pdf
-
-    Newer records contain:
-
-        email_resumes/resume.pdf
-
-    Therefore we compare both the full stored path and
-    the filename.
-    """
-
-    clean_name = get_file_name(file_name)
+    clean_name = get_file_name(
+        file_name
+    )
 
     if not clean_name:
         return False
+
+    create_table()
 
     connection = get_connection()
     cursor = connection.cursor()
 
     try:
+
         cursor.execute(
             """
             SELECT resume_file
@@ -113,14 +172,12 @@ def already_processed(file_name):
         rows = cursor.fetchall()
 
     finally:
+
         connection.close()
 
     for row in rows:
 
-        try:
-            stored_path = row["resume_file"]
-        except Exception:
-            stored_path = row[0]
+        stored_path = row["resume_file"]
 
         if not stored_path:
             continue
@@ -133,7 +190,12 @@ def already_processed(file_name):
             stored_path
         )
 
-        if stored_name.lower() == clean_name.lower():
+        if (
+            stored_name.lower()
+            ==
+            clean_name.lower()
+        ):
+
             return True
 
     return False
@@ -144,17 +206,15 @@ def already_processed(file_name):
 # ============================================================
 
 def value_to_text(value):
-    """
-    Convert parser output into SQLite-friendly text.
-    """
 
     if value is None:
         return ""
 
     if isinstance(
         value,
-        (list, tuple, set),
+        (list, tuple, set)
     ):
+
         return ", ".join(
             str(item).strip()
             for item in value
@@ -170,91 +230,70 @@ def value_to_text(value):
 
 def save_candidate(
     candidate,
-    file_path,
+    file_path
 ):
     """
-    Save candidate and the ACTUAL resume path.
-
-    Important:
-        We now store:
-
-            email_resumes/example.pdf
-
-        instead of only:
-
-            example.pdf
+    Save parsed candidate information into SQLite.
     """
 
-    connection = get_connection()
-    cursor = connection.cursor()
+    name = value_to_text(
+        candidate.get("name")
+    )
 
-    try:
+    email = value_to_text(
+        candidate.get("email")
+    )
 
-        skills = value_to_text(
-            candidate.get(
-                "skills",
-                [],
-            )
-        )
+    phone = value_to_text(
+        candidate.get("phone")
+    )
 
-        education = value_to_text(
-            candidate.get(
-                "education",
-                [],
-            )
-        )
+    skills = value_to_text(
+        candidate.get("skills", [])
+    )
 
-        experience = value_to_text(
-            candidate.get(
-                "experience",
-                "",
-            )
-        )
+    experience = value_to_text(
+        candidate.get("experience", "")
+    )
 
-        resume_text = value_to_text(
-            candidate.get(
-                "resume_text",
-                "",
-            )
-        )
+    education = value_to_text(
+        candidate.get("education", [])
+    )
 
-        stored_file_path = normalize_resume_path(
-            file_path
-        )
+    resume_text = value_to_text(
+        candidate.get("resume_text", "")
+    )
 
-        cursor.execute(
-            """
-            INSERT INTO candidates
-            (
-                name,
-                email,
-                phone,
-                skills,
-                experience,
-                education,
-                resume_file,
-                resume_text,
-                source
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                candidate.get("name"),
-                candidate.get("email"),
-                candidate.get("phone"),
-                skills,
-                experience,
-                education,
-                stored_file_path,
-                resume_text,
-                "email",
-            ),
-        )
+    stored_file_path = normalize_resume_path(
+        file_path
+    )
 
-        connection.commit()
+    # --------------------------------------------------------
+    # Insert candidate
+    # --------------------------------------------------------
 
-    finally:
-        connection.close()
+    candidate_id = insert_candidate(
+
+        name=name,
+
+        email=email,
+
+        phone=phone,
+
+        skills=skills,
+
+        experience=experience,
+
+        education=education,
+
+        resume_file=stored_file_path,
+
+        resume_text=resume_text,
+
+        source="email"
+    )
+
+    return candidate_id
 
 
 # ============================================================
@@ -265,20 +304,15 @@ def download_attachment(
     access_token,
     message_id,
     attachment_id,
-    file_name,
+    file_name
 ):
-    """
-    Download an Outlook attachment into email_resumes.
-
-    Returns:
-        email_resumes/<actual_filename>
-    """
 
     clean_name = get_file_name(
         file_name
     )
 
     if not clean_name:
+
         raise ValueError(
             "Attachment filename is empty."
         )
@@ -296,19 +330,19 @@ def download_attachment(
     response = requests.get(
         url,
         headers=headers,
-        timeout=60,
+        timeout=60
     )
 
     response.raise_for_status()
 
     file_path = os.path.join(
         EMAIL_RESUME_FOLDER,
-        clean_name,
+        clean_name
     )
 
     with open(
         file_path,
-        "wb",
+        "wb"
     ) as file:
 
         file.write(
@@ -328,31 +362,31 @@ def sync_outlook_resumes(
     on_device_code=None,
 ):
 
-    # --------------------------------------------------------
+    # ========================================================
     # DATABASE
-    # --------------------------------------------------------
+    # ========================================================
 
     create_table()
 
-    # --------------------------------------------------------
+    # ========================================================
     # RESUME FOLDER
-    # --------------------------------------------------------
+    # ========================================================
 
     create_email_resume_folder()
 
-    # --------------------------------------------------------
+    # ========================================================
     # MICROSOFT LOGIN
-    # --------------------------------------------------------
+    # ========================================================
 
     access_token = get_access_token(
         on_device_code=on_device_code
     )
 
-    # --------------------------------------------------------
-    # GET JOB EMAILS
-    # --------------------------------------------------------
+    # ========================================================
+    # GET EMAILS FROM THE OUTLOOK "Resumes" FOLDER ONLY
+    # ========================================================
 
-    emails = get_job_emails(
+    emails = get_resume_folder_emails(
         access_token
     )
 
@@ -361,9 +395,13 @@ def sync_outlook_resumes(
     )
 
     attachments_checked = 0
+
     documents_downloaded = 0
+
     already_processed_count = 0
+
     resumes_saved = 0
+
     rejected_count = 0
 
     print("=" * 60)
@@ -371,7 +409,8 @@ def sync_outlook_resumes(
     print("=" * 60)
 
     print(
-        f"Job emails found: {emails_scanned}"
+        f"Emails with attachments found in Outlook Resumes folder: "
+        f"{emails_scanned}"
     )
 
     # ========================================================
@@ -391,6 +430,7 @@ def sync_outlook_resumes(
 
         print()
         print("-" * 60)
+
         print(
             f"Email: {subject}"
         )
@@ -398,30 +438,31 @@ def sync_outlook_resumes(
         if not message_id:
             continue
 
-        # ----------------------------------------------------
+        # ====================================================
         # GET ATTACHMENTS
-        # ----------------------------------------------------
+        # ====================================================
 
         try:
 
             attachments = get_email_attachments(
                 access_token,
-                message_id,
+                message_id
             )
 
         except Exception as error:
 
             print(
-                f"ERROR getting attachments: {error}"
+                f"ERROR getting attachments: "
+                f"{error}"
             )
 
             rejected_count += 1
 
             continue
 
-        # ----------------------------------------------------
+        # ====================================================
         # PROCESS ATTACHMENTS
-        # ----------------------------------------------------
+        # ====================================================
 
         for attachment in attachments:
 
@@ -471,7 +512,8 @@ def sync_outlook_resumes(
                 already_processed_count += 1
 
                 print(
-                    f"Already processed: {file_name}"
+                    f"Already processed: "
+                    f"{file_name}"
                 )
 
                 continue
@@ -480,19 +522,22 @@ def sync_outlook_resumes(
             # DOWNLOAD
             # ------------------------------------------------
 
+            file_path = None
+
             try:
 
                 file_path = download_attachment(
                     access_token,
                     message_id,
                     attachment_id,
-                    file_name,
+                    file_name
                 )
 
                 documents_downloaded += 1
 
                 print(
-                    f"Downloaded: {file_path}"
+                    f"Downloaded: "
+                    f"{file_path}"
                 )
 
             except Exception as error:
@@ -540,14 +585,54 @@ def sync_outlook_resumes(
 
                 rejected_count += 1
 
-                # Remove broken downloaded file
                 try:
-                    if os.path.exists(
+
+                    if (
                         file_path
+                        and
+                        os.path.exists(
+                            file_path
+                        )
                     ):
+
                         os.remove(
                             file_path
                         )
+
+                except Exception:
+                    pass
+
+                continue
+
+            # ------------------------------------------------
+            # RESUME VALIDATION
+            # ------------------------------------------------
+
+            if not is_likely_resume(
+                candidate
+            ):
+
+                print(
+                    f"Rejected as non-resume: "
+                    f"{file_name}"
+                )
+
+                rejected_count += 1
+
+                try:
+
+                    if (
+                        file_path
+                        and
+                        os.path.exists(
+                            file_path
+                        )
+                    ):
+
+                        os.remove(
+                            file_path
+                        )
+
                 except Exception:
                     pass
 
@@ -559,17 +644,18 @@ def sync_outlook_resumes(
 
             try:
 
-                # IMPORTANT:
-                # Store file_path, not file_name.
-                save_candidate(
+                candidate_id = save_candidate(
                     candidate,
-                    file_path,
+                    file_path
                 )
 
                 resumes_saved += 1
 
                 print(
-                    f"SUCCESS - Resume saved: "
+                    f"SUCCESS - Resume saved"
+                    f" | Candidate ID: "
+                    f"{candidate_id}"
+                    f" | File: "
                     f"{file_path}"
                 )
 
@@ -582,17 +668,23 @@ def sync_outlook_resumes(
 
                 rejected_count += 1
 
+                continue
+
     # ========================================================
     # FINAL REPORT
     # ========================================================
 
     print()
     print("=" * 60)
-    print("OUTLOOK SYNC COMPLETED")
+
+    print(
+        "OUTLOOK SYNC COMPLETED"
+    )
+
     print("=" * 60)
 
     print(
-        f"Emails scanned: "
+        f"Emails scanned from Outlook Resumes folder: "
         f"{emails_scanned}"
     )
 
@@ -624,10 +716,22 @@ def sync_outlook_resumes(
     print("=" * 60)
 
     return {
-        "emails_scanned": emails_scanned,
-        "attachments_checked": attachments_checked,
-        "documents_downloaded": documents_downloaded,
-        "already_processed": already_processed_count,
-        "resumes_saved": resumes_saved,
-        "rejected_count": rejected_count,
+
+        "emails_scanned":
+            emails_scanned,
+
+        "attachments_checked":
+            attachments_checked,
+
+        "documents_downloaded":
+            documents_downloaded,
+
+        "already_processed":
+            already_processed_count,
+
+        "resumes_saved":
+            resumes_saved,
+
+        "rejected_count":
+            rejected_count,
     }

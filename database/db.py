@@ -1,12 +1,14 @@
 import sqlite3
-import os
+from pathlib import Path
 
 
 # ============================================================
-# DATABASE CONFIGURATION
+# DATABASE LOCATION
 # ============================================================
 
-DATABASE = "resume_matcher.db"
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+DATABASE = BASE_DIR / "resume_matcher.db"
 
 
 # ============================================================
@@ -18,7 +20,10 @@ def get_connection():
     Create and return a SQLite database connection.
     """
 
-    connection = sqlite3.connect(DATABASE)
+    connection = sqlite3.connect(
+        DATABASE,
+        check_same_thread=False
+    )
 
     connection.row_factory = sqlite3.Row
 
@@ -26,27 +31,26 @@ def get_connection():
 
 
 # ============================================================
-# CREATE / UPDATE DATABASE
+# CREATE / UPDATE DATABASE TABLE
 # ============================================================
 
 def create_table():
     """
-    Create the candidates table if it doesn't exist.
+    Create the candidates table if it does not exist.
 
-    Also performs a lightweight database migration for
-    existing databases so newly added columns are created
-    automatically.
+    Also adds the 'source' column to older databases
+    that were created before source tracking was added.
     """
 
     connection = get_connection()
-
     cursor = connection.cursor()
 
     # --------------------------------------------------------
-    # Create candidates table if it does not exist
+    # Create table
     # --------------------------------------------------------
 
-    cursor.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS candidates (
 
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,40 +71,248 @@ def create_table():
 
             resume_text TEXT,
 
-            source TEXT,
+            source TEXT DEFAULT 'email',
 
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 
         )
-    """)
+        """
+    )
 
     # --------------------------------------------------------
     # Check existing columns
     # --------------------------------------------------------
 
-    cursor.execute("""
-        PRAGMA table_info(candidates)
-    """)
+    cursor.execute(
+        "PRAGMA table_info(candidates)"
+    )
 
-    existing_columns = {
-        row[1]
+    columns = [
+        row["name"]
         for row in cursor.fetchall()
-    }
+    ]
 
     # --------------------------------------------------------
-    # Add source column to older databases
+    # Add source column to old database
     # --------------------------------------------------------
 
-    if "source" not in existing_columns:
+    if "source" not in columns:
 
-        cursor.execute("""
+        cursor.execute(
+            """
             ALTER TABLE candidates
-            ADD COLUMN source TEXT
-        """)
+            ADD COLUMN source TEXT DEFAULT 'email'
+            """
+        )
 
     # --------------------------------------------------------
-    # Commit changes
+    # Add created_at if an older database doesn't have it
     # --------------------------------------------------------
+
+    if "created_at" not in columns:
+
+        cursor.execute(
+            """
+            ALTER TABLE candidates
+            ADD COLUMN created_at
+            TIMESTAMP
+            """
+        )
+
+    connection.commit()
+    connection.close()
+
+
+# ============================================================
+# INSERT CANDIDATE
+# ============================================================
+
+def insert_candidate(
+    name,
+    email,
+    phone,
+    skills,
+    experience,
+    education,
+    resume_file,
+    resume_text,
+    source="email"
+):
+    """
+    Insert one candidate into the database.
+    """
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO candidates
+        (
+            name,
+            email,
+            phone,
+            skills,
+            experience,
+            education,
+            resume_file,
+            resume_text,
+            source
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            name,
+            email,
+            phone,
+            skills,
+            experience,
+            education,
+            resume_file,
+            resume_text,
+            source
+        )
+    )
+
+    connection.commit()
+
+    candidate_id = cursor.lastrowid
+
+    connection.close()
+
+    return candidate_id
+
+
+# ============================================================
+# GET ALL CANDIDATES
+# ============================================================
+
+def get_all_candidates():
+
+    create_table()
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute(
+        """
+        SELECT *
+        FROM candidates
+        ORDER BY created_at DESC, id DESC
+        """
+    )
+
+    candidates = cursor.fetchall()
+
+    connection.close()
+
+    return candidates
+
+
+# ============================================================
+# GET CANDIDATE BY ID
+# ============================================================
+
+def get_candidate_by_id(candidate_id):
+
+    create_table()
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute(
+        """
+        SELECT *
+        FROM candidates
+        WHERE id = ?
+        """,
+        (candidate_id,)
+    )
+
+    candidate = cursor.fetchone()
+
+    connection.close()
+
+    return candidate
+
+
+# ============================================================
+# CHECK DUPLICATE CANDIDATE
+# ============================================================
+
+def candidate_exists(
+    email=None,
+    resume_file=None
+):
+    """
+    Check whether a candidate/resume is already stored.
+
+    Email is checked first when available.
+    Resume filename is checked as a fallback.
+    """
+
+    create_table()
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    try:
+
+        if email:
+
+            cursor.execute(
+                """
+                SELECT id
+                FROM candidates
+                WHERE LOWER(TRIM(email)) = LOWER(TRIM(?))
+                LIMIT 1
+                """,
+                (email,)
+            )
+
+        elif resume_file:
+
+            cursor.execute(
+                """
+                SELECT id
+                FROM candidates
+                WHERE LOWER(TRIM(resume_file)) = LOWER(TRIM(?))
+                LIMIT 1
+                """,
+                (resume_file,)
+            )
+
+        else:
+
+            return False
+
+        result = cursor.fetchone()
+
+        return result is not None
+
+    finally:
+
+        connection.close()
+
+
+# ============================================================
+# DELETE CANDIDATE
+# ============================================================
+
+def delete_candidate(candidate_id):
+
+    create_table()
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute(
+        """
+        DELETE FROM candidates
+        WHERE id = ?
+        """,
+        (candidate_id,)
+    )
 
     connection.commit()
 
@@ -108,22 +320,32 @@ def create_table():
 
 
 # ============================================================
-# INITIALIZE DATABASE
+# COUNT CANDIDATES
 # ============================================================
 
-create_table()
-
-
-# ============================================================
-# DIRECT EXECUTION
-# ============================================================
-
-if __name__ == "__main__":
-
-    print("Checking database...")
+def count_candidates():
 
     create_table()
 
-    print("Candidate database is ready.")
+    connection = get_connection()
+    cursor = connection.cursor()
 
-    print(f"Database file: {os.path.abspath(DATABASE)}")
+    cursor.execute(
+        """
+        SELECT COUNT(*) AS total
+        FROM candidates
+        """
+    )
+
+    result = cursor.fetchone()
+
+    connection.close()
+
+    return result["total"]
+
+
+# ============================================================
+# DATABASE INITIALIZATION
+# ============================================================
+
+create_table()

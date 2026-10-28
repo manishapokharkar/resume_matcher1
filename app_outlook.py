@@ -3,6 +3,7 @@ import pandas as pd
 import os
 import io
 import zipfile
+import re
 
 from match_candidates import match_candidates
 from outlook_sync import sync_outlook_resumes
@@ -17,7 +18,7 @@ st.set_page_config(
     page_title="Resume Matcher",
     page_icon="📄",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 
@@ -30,11 +31,27 @@ DEFAULT_STATE = {
     "outlook_sync_error": None,
     "candidate_matches": None,
     "candidate_matches_job": None,
+    "candidate_matches_job_title": None,
+    "job_title_input": "",
+    "job_form_open": False,
 }
 
 for key, value in DEFAULT_STATE.items():
     if key not in st.session_state:
         st.session_state[key] = value
+
+
+def reset_job_opening():
+    st.session_state.job_title_input = ""
+    st.session_state.job_description_input = ""
+    st.session_state.candidate_matches = None
+    st.session_state.candidate_matches_job = None
+    st.session_state.candidate_matches_job_title = None
+    st.session_state.job_form_open = True
+
+
+def edit_job_opening():
+    st.session_state.job_form_open = True
 
 
 # ============================================================
@@ -44,161 +61,351 @@ for key, value in DEFAULT_STATE.items():
 st.markdown(
     """
     <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&display=swap');
 
-    /* ======================================================
-       MAIN APPLICATION
-       ====================================================== */
+    :root {
+        --bg: #f4f0f7;
+        --panel: rgba(248, 245, 251, 0.78);
+        --panel-strong: #f8f5fb;
+        --ink: #252238;
+        --muted: #706b83;
+        --line: rgba(91, 77, 117, 0.14);
+        --brand-1: #7662aa;
+        --brand-2: #6f9c98;
+        --brand-3: #d99a78;
+        --success: #427c68;
+        --warning: #bd8751;
+        --shadow: 0 18px 44px rgba(45, 37, 61, 0.08);
+    }
 
-    .stApp {
-        background-color: #f7f8fc;
+    html, body, [data-testid="stAppViewContainer"], .stApp {
+        background:
+            radial-gradient(ellipse at 12% 0%, rgba(196, 177, 220, 0.24), transparent 32%),
+            radial-gradient(ellipse at 92% 18%, rgba(170, 207, 196, 0.18), transparent 28%),
+            linear-gradient(180deg, #f6f3f8 0%, #eeeaf3 100%);
+        color: var(--ink);
     }
 
     .block-container {
-        max-width: 1450px;
-        padding-top: 1.5rem;
-        padding-bottom: 3rem;
+        max-width: 1500px;
+        padding-top: 1.1rem;
+        padding-bottom: 4rem;
     }
 
-
-    /* ======================================================
-       SIDEBAR
-       ====================================================== */
+    header[data-testid="stHeader"] {
+        background: rgba(246, 243, 248, 0.76);
+    }
 
     section[data-testid="stSidebar"] {
-        background-color: #111827;
-        border-right: 1px solid #1f2937;
+        background: linear-gradient(180deg, #302a40 0%, #242235 100%);
+        border-right: 1px solid rgba(255, 255, 255, 0.08);
     }
 
     section[data-testid="stSidebar"] * {
-        color: #e5e7eb;
+        color: #edf2ff;
     }
 
-    section[data-testid="stSidebar"] .stButton button {
-        background-color: #1f2937;
-        border: 1px solid #374151;
-        color: #f9fafb;
+    section[data-testid="stSidebar"] .stButton > button {
+        background: linear-gradient(135deg, #8875b8 0%, #67958f 100%);
+        border: none;
+        color: #fff;
+        box-shadow: 0 12px 24px rgba(31, 25, 45, 0.22);
     }
 
-
-    /* ======================================================
-       HEADINGS
-       ====================================================== */
-
-    h1 {
-        letter-spacing: -0.8px;
+    section[data-testid="stSidebar"] .stButton > button:hover {
+        filter: brightness(1.04);
     }
 
-    h2 {
-        letter-spacing: -0.4px;
-    }
-
-    h3 {
-        letter-spacing: -0.2px;
-    }
-
-
-    /* ======================================================
-       CONTAINERS
-       ====================================================== */
-
-    div[data-testid="stVerticalBlockBorderWrapper"] {
+    .stTabs [role="tablist"] {
+        gap: 0.6rem;
+        background: rgba(248, 245, 251, 0.55);
+        border: 1px solid var(--line);
         border-radius: 16px;
+        padding: 0.4rem;
+        margin-bottom: 1rem;
     }
 
-
-    /* ======================================================
-       BUTTONS
-       ====================================================== */
-
-    .stButton > button,
-    .stDownloadButton > button {
-        border-radius: 9px;
-        font-weight: 650;
-        min-height: 42px;
-    }
-
-    button[data-baseweb="tab"] {
-        font-weight: 650;
-    }
-
-
-    /* ======================================================
-       INPUTS
-       ====================================================== */
-
-    textarea,
-    input {
-        border-radius: 9px !important;
-    }
-
-
-    /* ======================================================
-       DATAFRAME
-       ====================================================== */
-
-    div[data-testid="stDataFrame"] {
+    .stTabs [role="tab"] {
         border-radius: 12px;
+        padding: 0.65rem 1rem;
+        font-weight: 700;
+        color: var(--muted);
+        transition: all 0.2s ease;
+    }
+
+    .stTabs [role="tab"][aria-selected="true"] {
+        background: rgba(118, 98, 170, 0.10);
+        color: var(--ink);
+        border: 1px solid rgba(118, 98, 170, 0.10);
+        box-shadow: 0 6px 16px rgba(53, 43, 74, 0.07);
+    }
+
+    h1, h2, h3, h4 {
+        letter-spacing: -0.04em;
+        font-family: 'Space Grotesk', 'Inter', sans-serif;
+    }
+
+    .creative-hero {
+        position: relative;
+        padding: 3.2rem 1rem 2.6rem;
+        margin: 0 auto 0.8rem;
+    }
+
+    .hero-row {
+        display: flex;
+        justify-content: center;
+        text-align: center;
+    }
+
+    .hero-kicker {
+        display: inline-block;
+        margin-bottom: 1rem;
+        color: #7662aa;
+        font-size: 0.72rem;
+        font-weight: 800;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+    }
+
+    .creative-hero h1 {
+        color: #292438;
+        margin: 0;
+        font-family: Georgia, 'Times New Roman', serif;
+        font-size: clamp(2.5rem, 5.2vw, 4.25rem);
+        line-height: 1.08;
+        letter-spacing: -0.045em;
+        max-width: 900px;
+        margin-inline: auto;
+    }
+
+    .hero-accent {
+        color: #79669d;
+        font-style: italic;
+    }
+
+    .hero-flow {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 0.65rem;
+        margin-top: 1.8rem;
+    }
+
+    .hero-flow-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.48rem 0.8rem 0.48rem 0.48rem;
+        border-radius: 999px;
+        background: rgba(248, 245, 251, 0.62);
+        color: #615a72;
+        font-size: 0.76rem;
+        font-weight: 700;
+        letter-spacing: 0.015em;
+    }
+
+    .job-openings-heading {
+        padding: 0.5rem 0 0.75rem;
+        color: #5f596d;
+        font-size: 0.72rem;
+        font-weight: 800;
+        letter-spacing: 0.16em;
+    }
+
+    .st-key-sticky-workflow-panel {
+        position: sticky;
+        top: 1rem;
+        align-self: flex-start;
+        z-index: 5;
+        max-height: calc(100vh - 2rem);
+        overflow-y: auto;
+    }
+
+    .st-key-results-scroll-panel {
+        max-height: calc(100vh - 2rem);
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        padding-right: 0.4rem;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(91, 77, 117, 0.3) transparent;
+    }
+
+    .st-key-job-openings-panel > [data-testid="stVerticalBlock"] {
+        gap: 0.55rem;
+    }
+
+    .flow-number {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 1.45rem;
+        height: 1.45rem;
+        border-radius: 50%;
+        background: #e7e0ef;
+        color: #6e5c95;
+        font-size: 0.68rem;
+        font-weight: 800;
+    }
+
+    .creative-hero p {
+        color: #716b7e;
+        margin: 1.1rem auto 0;
+        font-size: 1.02rem;
+        line-height: 1.65;
+        max-width: 780px;
+    }
+
+    h1, h2, h3, h4 {
+        color: #292438;
+    }
+
+    div[data-testid="stVerticalBlockBorderWrapper"],
+    div[data-testid="stExpander"],
+    div[data-testid="stDataFrame"] {
+        border-radius: 22px;
+        border: 1px solid rgba(91, 77, 117, 0.12);
+        box-shadow: 0 12px 32px rgba(45, 37, 61, 0.055);
         overflow: hidden;
     }
 
-
-    /* ======================================================
-       METRICS
-       ====================================================== */
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        background: rgba(248, 245, 251, 0.36);
+    }
 
     div[data-testid="stMetric"] {
-        background: white;
-        border: 1px solid #e5e7eb;
-        border-radius: 14px;
-        padding: 16px 18px;
-        box-shadow: 0 4px 16px rgba(17, 24, 39, 0.04);
+        background: linear-gradient(145deg, rgba(250,248,252,0.78), rgba(232,226,240,0.52));
+        border: 1px solid rgba(91, 77, 117, 0.10);
+        border-radius: 17px;
+        padding: 0.85rem 1rem;
+        box-shadow: none;
     }
 
     div[data-testid="stMetricLabel"] {
-        color: #6b7280;
+        color: #777186;
+        font-size: 0.75rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
     }
 
     div[data-testid="stMetricValue"] {
-        color: #111827;
+        color: #302a40;
+        font-family: 'Space Grotesk', 'Inter', sans-serif;
+        font-weight: 700;
     }
 
-
-    /* ======================================================
-       TABS
-       ====================================================== */
-
-    button[data-baseweb="tab"] {
-        padding-left: 16px;
-        padding-right: 16px;
+    .stButton > button,
+    .stDownloadButton > button {
+        border-radius: 13px;
+        font-weight: 700;
+        min-height: 44px;
+        box-shadow: 0 7px 18px rgba(45, 37, 61, 0.07);
+        transition: transform 0.18s ease, box-shadow 0.18s ease, filter 0.18s ease;
     }
 
+    .stButton > button:hover,
+    .stDownloadButton > button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 10px 22px rgba(45, 37, 61, 0.12);
+    }
 
-    /* ======================================================
-       HIDE STREAMLIT DEFAULT MENU / FOOTER
-       ====================================================== */
+    .stButton > button[kind="primary"] {
+        background: linear-gradient(120deg, #7662aa 0%, #648d88 100%);
+        border: none;
+        color: white;
+    }
 
-    #MainMenu {
+    [class*="st-key-new_job_button"] button {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        color: #17684d !important;
+        padding-left: 0.35rem;
+        padding-right: 0.35rem;
+    }
+
+    [class*="st-key-new_job_button"] button:hover {
+        background: rgba(23, 104, 77, 0.08) !important;
+        box-shadow: none !important;
+    }
+
+    [class*="st-key-save_job_button"] button {
+        background: #17684d !important;
+        border: 1px solid #17684d !important;
+        color: #fff !important;
+        box-shadow: none !important;
+    }
+
+    [class*="st-key-save_job_button"] button:hover {
+        background: #11583f !important;
+        border-color: #11583f !important;
+    }
+
+    [class*="st-key-sync_outlook_button"] button {
+        background: rgba(248, 245, 251, 0.62) !important;
+        border: 1px solid #17684d !important;
+        color: #17684d !important;
+        box-shadow: none !important;
+    }
+
+    [class*="st-key-sync_outlook_button"] button:hover {
+        background: rgba(23, 104, 77, 0.08) !important;
+        border-color: #11583f !important;
+        color: #11583f !important;
+    }
+
+    textarea, input, select {
+        border-radius: 15px !important;
+        border: 1px solid rgba(91, 77, 117, 0.18) !important;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.55);
+    }
+
+    textarea:focus, input:focus, select:focus {
+        border-color: rgba(118, 98, 170, 0.46) !important;
+        box-shadow: 0 0 0 0.16rem rgba(118, 98, 170, 0.12) !important;
+    }
+
+    .stDataFrame {
+        border-radius: 16px;
+        overflow: hidden;
+    }
+
+    div[data-testid="stAlert"] {
+        border-radius: 15px;
+        border: 1px solid rgba(91, 77, 117, 0.10);
+    }
+
+    hr {
+        border-color: rgba(91, 77, 117, 0.14);
+    }
+
+    #MainMenu, footer {
         visibility: hidden;
     }
-
-    footer {
-        visibility: hidden;
-    }
-
-
-    /* ======================================================
-       MOBILE
-       ====================================================== */
 
     @media (max-width: 900px) {
-
         .block-container {
             padding-left: 1rem;
             padding-right: 1rem;
         }
-
+        .st-key-sticky-workflow-panel {
+            position: static;
+            max-height: none;
+            overflow: visible;
+        }
+        .st-key-results-scroll-panel {
+            max-height: none;
+            overflow: visible;
+            padding-right: 0;
+        }
+        .creative-hero {
+            padding: 2.4rem 0.4rem 1.7rem;
+        }
+        .creative-hero h1 {
+            font-size: clamp(2.2rem, 10vw, 3.2rem);
+        }
     }
-
     </style>
     """,
     unsafe_allow_html=True,
@@ -509,6 +716,55 @@ def display_skills(value):
     return " • ".join(items[:12])
 
 
+def _skill_list(value):
+    """Convert matched/missing skill values into a normalized list."""
+    if not value:
+        return []
+
+    if isinstance(value, (list, tuple, set)):
+        items = value
+    else:
+        items = re.split(r"[,;\\n•|]+", str(value))
+
+    skills = []
+    seen = set()
+
+    for item in items:
+        skill = str(item).strip()
+        if not skill or skill.lower() in {
+            "none", "not available", "n/a", "no matching skills detected"
+        }:
+            continue
+
+        normalized = skill.casefold()
+        if normalized not in seen:
+            seen.add(normalized)
+            skills.append(skill)
+
+    return skills
+
+
+def get_skill_match(candidate):
+    """
+    Return (percentage, matched_count, total_identified_skills).
+
+    The percentage uses the matcher's matched_skills and missing_skills.
+    """
+    matched = _skill_list(candidate.get("matched_skills"))
+    missing = _skill_list(candidate.get("missing_skills"))
+
+    matched_keys = {skill.casefold() for skill in matched}
+    missing_keys = {skill.casefold() for skill in missing}
+    total = len(matched_keys | missing_keys)
+
+    if total == 0:
+        return 0, 0, 0
+
+    matched_count = len(matched_keys)
+    percentage = round(matched_count / total * 100)
+    return percentage, matched_count, total
+
+
 def clean_value(
     value,
     default="Not available",
@@ -588,370 +844,201 @@ def get_qualified_matches(matches):
     return qualified_matches
 
 
-# ============================================================
-# SIDEBAR
-# ============================================================
+def render_outlook_sync_report():
+    report = st.session_state.outlook_sync_report
 
-with st.sidebar:
+    if not report:
+        return
 
-    st.markdown(
-        "## 📄 Resume Matcher"
-    )
+    with st.expander("View Outlook sync report"):
+        report_col1, report_col2, report_col3 = st.columns(3)
 
-    st.caption(
-        "A simple workspace for sourcing, matching "
-        "and downloading candidates."
-    )
+        with report_col1:
+            st.metric("Emails scanned", report.get("emails_scanned", 0))
+            st.metric("Downloaded", report.get("documents_downloaded", 0))
 
-    st.divider()
-
-    st.markdown(
-        "### Workflow"
-    )
-
-    st.markdown(
-        """
-        **01** 📥 Import resumes from Outlook
-
-        **02** 🎯 Add job description
-
-        **03** 📊 Compare candidates
-
-        **04** ⬇️ Download resumes
-        """
-    )
-
-    st.divider()
-
-    st.info(
-        "💡 Tip: Sync Outlook before matching candidates."
-    )
-
-
-# ============================================================
-# HERO
-# ============================================================
-
-with st.container(border=True):
-
-    st.caption(
-        "🟠 AI-ASSISTED RECRUITING WORKSPACE"
-    )
-
-    st.title(
-        "Find the right candidate faster."
-    )
-
-    st.write(
-        "Import resumes from Outlook, paste a job description, "
-        "and quickly identify candidates with the strongest "
-        "skill match."
-    )
-
-
-# ============================================================
-# MAIN TABS
-# ============================================================
-
-tab_import, tab_match, tab_results = st.tabs(
-    [
-        "📥 Resume Sources",
-        "🎯 Match Candidates",
-        "📊 Results",
-    ]
-)
-
-
-# ============================================================
-# TAB 1 — RESUME SOURCES
-# ============================================================
-
-with tab_import:
-
-    st.header(
-        "Resume Sources"
-    )
-
-    st.caption(
-        "Bring candidates into your resume database from Outlook."
-    )
-
-    with st.container(border=True):
-
-        st.subheader(
-            "📥 Outlook Resume Sync"
-        )
-
-        st.write(
-            "Check Outlook for job-related emails and process "
-            "supported PDF/DOCX resume attachments."
-        )
-
-    st.write("")
-
-    sync_clicked = st.button(
-        "🔄 Sync Outlook",
-        type="primary",
-        use_container_width=True,
-        key="sync_outlook_button",
-    )
-
-    if sync_clicked:
-
-        def show_device_code(message):
-
-            st.warning(
-                "Microsoft Outlook sign-in is required."
-            )
-
-            st.write(
-                "Complete Microsoft authentication:"
-            )
-
-            st.code(message)
-
-        with st.spinner(
-            "Checking Outlook for resumes..."
-        ):
-
-            try:
-
-                report = sync_outlook_resumes(
-                    on_device_code=show_device_code
-                )
-
-                st.session_state.outlook_sync_report = (
-                    report
-                )
-
-                st.session_state.outlook_sync_error = (
-                    None
-                )
-
-            except Exception as error:
-
-                st.session_state.outlook_sync_report = (
-                    None
-                )
-
-                st.session_state.outlook_sync_error = (
-                    str(error)
-                )
-
-    # --------------------------------------------------------
-    # ERROR
-    # --------------------------------------------------------
-
-    if st.session_state.outlook_sync_error:
-
-        st.error(
-            "Outlook sync failed."
-        )
-
-        st.code(
-            st.session_state.outlook_sync_error
-        )
-
-    # --------------------------------------------------------
-    # REPORT
-    # --------------------------------------------------------
-
-    if st.session_state.outlook_sync_report:
-
-        report = (
-            st.session_state.outlook_sync_report
-        )
-
-        st.success(
-            "Outlook sync completed successfully."
-        )
-
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-
-            st.metric(
-                "Emails scanned",
-                report.get(
-                    "emails_scanned",
-                    0,
-                ),
-            )
-
-        with col2:
-
+        with report_col2:
             st.metric(
                 "Attachments checked",
-                report.get(
-                    "attachments_checked",
-                    0,
-                ),
+                report.get("attachments_checked", 0),
             )
+            st.metric("Already processed", report.get("already_processed", 0))
 
-        with col3:
-
-            st.metric(
-                "New resumes",
-                report.get(
-                    "resumes_saved",
-                    0,
-                ),
-            )
-
-        st.write("")
-
-        with st.expander(
-            "View Outlook sync details"
-        ):
-
-            detail_col1, detail_col2, detail_col3 = (
-                st.columns(3)
-            )
-
-            with detail_col1:
-
-                st.metric(
-                    "Downloaded",
-                    report.get(
-                        "documents_downloaded",
-                        0,
-                    ),
-                )
-
-            with detail_col2:
-
-                st.metric(
-                    "Already processed",
-                    report.get(
-                        "already_processed",
-                        0,
-                    ),
-                )
-
-            with detail_col3:
-
-                st.metric(
-                    "Non-resumes rejected",
-                    report.get(
-                        "rejected_count",
-                        0,
-                    ),
-                )
+        with report_col3:
+            st.metric("New resumes", report.get("resumes_saved", 0))
+            st.metric("Non-resumes rejected", report.get("rejected_count", 0))
 
 
 # ============================================================
-# TAB 2 — MATCH CANDIDATES
+# APP HEADER
 # ============================================================
 
-with tab_match:
+st.markdown(
+    """
+    <div class="creative-hero">
+        <div class="hero-row">
+            <div>
+                <span class="hero-kicker">YOUR RECRUITING WORKSPACE</span>
+                <h1>Find your next great hire, <span class="hero-accent">with clarity.</span></h1>
+                <p>
+                    Bring resumes and role requirements together. See your
+                    strongest matches, understand the fit, and build a shortlist
+                    with confidence.
+                </p>
+                <div class="hero-flow">
+                    <span class="hero-flow-item"><span class="flow-number">01</span> Import resumes</span>
+                    <span class="hero-flow-item"><span class="flow-number">02</span> Add the role</span>
+                    <span class="hero-flow-item"><span class="flow-number">03</span> Review your shortlist</span>
+                </div>
+            </div>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+st.divider()
 
-    st.header(
-        "Match Candidates"
-    )
 
-    st.caption(
-        "Paste the role requirements below to compare them "
-        "against the resumes in your database."
-    )
+# ============================================================
+# WORKFLOW SECTIONS
+# ============================================================
 
-    job_description = st.text_area(
-        "Job Description",
-        height=260,
-        placeholder=(
-            "Example:\n\n"
-            "We are looking for a Frontend Developer with "
-            "experience in React.js, JavaScript, HTML, CSS, "
-            "Tailwind CSS and Git.\n\n"
-            "Add the important skills, tools, experience and "
-            "responsibilities from the actual job description."
-        ),
-        key="job_description_input",
-    )
+workflow_col, tab_results = st.columns([0.72, 1.83], gap="large")
+sync_complete = st.session_state.outlook_sync_report is not None
 
-    st.caption(
-        "💡 Better job descriptions usually produce more useful "
-        "skill matching."
-    )
+with workflow_col.container(key="sticky-workflow-panel"):
 
-    match_clicked = st.button(
-        "🔎 Find Matching Candidates",
-        type="primary",
-        use_container_width=True,
-        key="match_candidates_button",
-    )
+    with st.container(key="job-openings-panel"):
+        heading_col, new_col = st.columns([2, 1])
 
-    if match_clicked:
-
-        if not job_description.strip():
-
-            st.warning(
-                "Please paste a job description first."
+        with heading_col:
+            st.markdown(
+                '<div class="job-openings-heading">JOB OPENINGS</div>',
+                unsafe_allow_html=True,
             )
 
-        else:
+        with new_col:
+            st.button(
+                "+ New",
+                key="new_job_button",
+                on_click=reset_job_opening,
+                use_container_width=True,
+            )
 
-            with st.spinner(
-                "Comparing candidates with the job description..."
-            ):
+        if st.session_state.job_form_open:
+            job_title = st.text_input(
+                "Job title",
+                placeholder="e.g. Senior Frontend Engineer",
+                key="job_title_input",
+            )
 
+            job_description = st.text_area(
+                "Job description",
+                height=180,
+                placeholder="Paste the job description...",
+                key="job_description_input",
+            )
+
+            save_job_clicked = st.button(
+                "Search",
+                type="primary",
+                use_container_width=True,
+                key="save_job_button",
+                disabled=not sync_complete,
+            )
+
+            if save_job_clicked:
+
+                if not job_title.strip():
+                    st.warning("Add a job title before saving this opening.")
+
+                elif not job_description.strip():
+                    st.warning("Paste the job description before saving this opening.")
+
+                else:
+                    with st.spinner("Saving the job and matching candidates..."):
+                        try:
+                            matches = match_candidates(job_description)
+                            st.session_state.candidate_matches = matches
+                            st.session_state.candidate_matches_job = job_description
+                            st.session_state.candidate_matches_job_title = (
+                                job_title.strip()
+                            )
+                            st.session_state.job_form_open = False
+
+                            qualified_count = len(
+                                get_qualified_matches(matches)
+                            )
+
+                            st.success(
+                                f"Job saved — {qualified_count} candidate(s) "
+                                f"above 50% match."
+                            )
+
+                        except Exception as error:
+                            st.session_state.candidate_matches = None
+                            st.session_state.candidate_matches_job = None
+                            st.session_state.candidate_matches_job_title = None
+                            st.error("Could not save the job and match candidates.")
+                            st.code(str(error))
+
+        elif st.session_state.candidate_matches_job_title:
+            st.button(
+                st.session_state.candidate_matches_job_title,
+                key="saved_job_opening_button",
+                on_click=edit_job_opening,
+                use_container_width=True,
+            )
+
+    with st.container(border=True):
+        st.markdown("#### Outlook sync")
+        st.caption(
+            "Connect Outlook to screen resumes from your “Resumes” folder."
+        )
+
+        sync_clicked = st.button(
+            "Connect Outlook",
+            type="secondary",
+            use_container_width=True,
+            key="sync_outlook_button",
+        )
+
+        if sync_clicked:
+
+            def show_device_code(message):
+                st.warning("Microsoft Outlook sign-in is required.")
+                st.write("Complete Microsoft authentication:")
+                st.code(message)
+
+            with st.spinner("Checking Outlook for resumes..."):
                 try:
-
-                    matches = match_candidates(
-                        job_description
+                    report = sync_outlook_resumes(
+                        on_device_code=show_device_code
                     )
-
-                    st.session_state.candidate_matches = (
-                        matches
-                    )
-
-                    st.session_state.candidate_matches_job = (
-                        job_description
-                    )
-
-                    # Count only qualified candidates
-                    qualified_count = len(
-                        get_qualified_matches(matches)
-                    )
-
-                    st.success(
-                        f"Matching completed — "
-                        f"{qualified_count} candidate(s) "
-                        f"above 50% match."
-                    )
-
+                    st.session_state.outlook_sync_report = report
+                    st.session_state.outlook_sync_error = None
                 except Exception as error:
+                    st.session_state.outlook_sync_report = None
+                    st.session_state.outlook_sync_error = str(error)
 
-                    st.session_state.candidate_matches = (
-                        None
-                    )
+        if st.session_state.outlook_sync_error:
+            st.error("Outlook sync failed.")
+            st.code(st.session_state.outlook_sync_error)
+        elif sync_complete:
+            st.success("Outlook sync completed.")
+        else:
+            st.caption("Sync resumes before saving a job to find candidates.")
 
-                    st.session_state.candidate_matches_job = (
-                        None
-                    )
-
-                    st.error(
-                        "Could not match candidates."
-                    )
-
-                    st.code(
-                        str(error)
-                    )
+    render_outlook_sync_report()
 
 
 # ============================================================
-# TAB 3 — RESULTS
+# STEP 3 — RESULTS
 # ============================================================
 
-with tab_results:
+with tab_results.container(key="results-scroll-panel"):
 
-    st.header(
-        "Matching Results"
-    )
-
-    st.caption(
-        "Only candidates with a match score above 50% "
-        "are displayed."
-    )
+    st.header("Results")
 
     matches = (
         st.session_state.candidate_matches
@@ -967,6 +1054,10 @@ with tab_results:
             "",
         )
     )
+    current_job_title = st.session_state.get(
+        "job_title_input",
+        "",
+    ).strip()
 
     # --------------------------------------------------------
     # NO RUN
@@ -975,9 +1066,8 @@ with tab_results:
     if matches is None:
 
         st.info(
-            "No matching run yet. Go to **Match Candidates**, "
-            "add a job description, and click "
-            "**Find Matching Candidates**."
+            "Create a job opening on the left and select **Search** "
+            "to see matching candidates here."
         )
 
     # --------------------------------------------------------
@@ -987,14 +1077,18 @@ with tab_results:
     elif (
         saved_job_description
         != current_job_description
+        or st.session_state.candidate_matches_job_title
+        != current_job_title
     ):
 
         st.warning(
-            "The job description has changed. Click "
-            "**Find Matching Candidates** to refresh the results."
+            "The job opening has changed. Select **Search** "
+            "to refresh the candidate matches."
         )
 
     else:
+        if current_job_title:
+            st.caption(f"JOB OPENING  ·  {current_job_title}")
 
         # ====================================================
         # IMPORTANT:
@@ -1094,6 +1188,12 @@ with tab_results:
                             f"{get_score(candidate):.0f}%"
                         ),
 
+                        "Skill Match": (
+                            f"{get_skill_match(candidate)[0]}%"
+                            if get_skill_match(candidate)[2] > 0
+                            else "N/A"
+                        ),
+
                         "Matching Skills": display_skills(
                             candidate.get(
                                 "matched_skills",
@@ -1137,6 +1237,12 @@ with tab_results:
 
                     "Match": st.column_config.TextColumn(
                         "Match",
+                        width="small",
+                    ),
+
+                    "Skill Match": st.column_config.TextColumn(
+                        "Skill Match",
+                        help="Percentage of identified job skills matched.",
                         width="small",
                     ),
 
@@ -1240,9 +1346,9 @@ with tab_results:
                     border=True
                 ):
 
-                    header_col1, header_col2 = (
+                    header_col1, header_col2, header_col3 = (
                         st.columns(
-                            [5, 1],
+                            [4, 1, 1],
                             vertical_alignment="center",
                         )
                     )
@@ -1260,8 +1366,34 @@ with tab_results:
                     with header_col2:
 
                         st.metric(
-                            "Match",
+                            "Overall Match",
                             f"{score:.0f}%",
+                        )
+
+                    skill_percentage, matched_count, total_skills = (
+                        get_skill_match(candidate)
+                    )
+
+                    with header_col3:
+
+                        st.metric(
+                            "Skill Match",
+                            (
+                                f"{skill_percentage}%"
+                                if total_skills
+                                else "N/A"
+                            ),
+                        )
+
+                    if total_skills:
+                        st.caption(
+                            f"{matched_count} of {total_skills} "
+                            f"identified skills matched"
+                        )
+                    else:
+                        st.caption(
+                            "Skill match percentage unavailable: "
+                            "no matched/missing skill data was returned."
                         )
 
                     st.divider()
@@ -1278,47 +1410,21 @@ with tab_results:
                         experience
                     )
 
-                    # ----------------------------------------
-                    # SKILLS
-                    # ----------------------------------------
-
                     skill_col1, skill_col2 = st.columns(2)
 
                     with skill_col1:
-
-                        st.markdown(
-                            "**Matching skills**"
-                        )
-
+                        st.markdown("**Matching skills**")
                         if matched_skills == "None":
-
-                            st.caption(
-                                "No matching skills detected."
-                            )
-
+                            st.caption("No matching skills detected.")
                         else:
-
-                            st.write(
-                                matched_skills
-                            )
+                            st.write(matched_skills)
 
                     with skill_col2:
-
-                        st.markdown(
-                            "**Skills to verify**"
-                        )
-
+                        st.markdown("**Skills to verify**")
                         if missing_skills == "None":
-
-                            st.caption(
-                                "No missing skills detected."
-                            )
-
+                            st.caption("No missing skills detected.")
                         else:
-
-                            st.write(
-                                missing_skills
-                            )
+                            st.write(missing_skills)
 
                     st.divider()
 

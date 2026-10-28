@@ -9,13 +9,16 @@ from resume_file_parser import extract_resume_text
 
 def extract_email(text):
 
+    if not text:
+        return ""
+
     match = re.search(
         r'[\w\.-]+@[\w\.-]+\.\w+',
         text
     )
 
     if match:
-        return match.group(0)
+        return match.group(0).strip()
 
     return ""
 
@@ -26,8 +29,13 @@ def extract_email(text):
 
 def extract_phone(text):
 
+    if not text:
+        return ""
+
     patterns = [
+
         r'(?:\+91[\s-]?)?[6-9]\d{9}',
+
         r'\+?\d[\d\s-]{8,14}\d'
     ]
 
@@ -50,6 +58,9 @@ def extract_phone(text):
 
 def extract_name(text):
 
+    if not text:
+        return ""
+
     lines = [
         line.strip()
         for line in text.splitlines()
@@ -57,6 +68,7 @@ def extract_name(text):
     ]
 
     ignored_words = [
+
         "resume",
         "curriculum vitae",
         "curriculum",
@@ -92,12 +104,14 @@ def extract_name(text):
         if len(line) > 60:
             continue
 
-        if len(
+        special_character_count = len(
             re.findall(
                 r'[^a-zA-Z .]',
                 line
             )
-        ) > 3:
+        )
+
+        if special_character_count > 3:
             continue
 
         words = line.split()
@@ -113,6 +127,9 @@ def extract_name(text):
 # ============================================================
 
 def extract_skills(text):
+
+    if not text:
+        return []
 
     common_skills = [
 
@@ -285,6 +302,9 @@ def extract_skills(text):
 
 def extract_experience(text):
 
+    if not text:
+        return ""
+
     patterns = [
 
         r'(\d+(?:\.\d+)?)\+?\s*years?\s*(?:of)?\s*experience',
@@ -317,6 +337,9 @@ def extract_experience(text):
 # ============================================================
 
 def extract_education(text):
+
+    if not text:
+        return []
 
     education_keywords = [
 
@@ -367,6 +390,9 @@ def parse_candidate(file_path):
         file_path
     )
 
+    if not text:
+        text = ""
+
     candidate = {
 
         "name": extract_name(text),
@@ -381,8 +407,7 @@ def parse_candidate(file_path):
 
         "education": extract_education(text),
 
-        # IMPORTANT:
-        # Keep the COMPLETE resume text
+        # Keep complete resume text
         "resume_text": text
     }
 
@@ -399,6 +424,9 @@ def is_likely_resume(candidate):
         "resume_text",
         ""
     )
+
+    if not text:
+        return False
 
     text_lower = text.lower()
 
@@ -475,7 +503,6 @@ def is_likely_resume(candidate):
         "responsibilities",
 
         # Engineering resume sections
-        "professional experience",
         "technical experience",
         "process engineering",
         "engineering experience",
