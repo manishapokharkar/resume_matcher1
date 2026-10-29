@@ -1,16 +1,21 @@
+
 import os
+from pathlib import Path
+
 import msal
 import streamlit as st
 
 from dotenv import load_dotenv
+from msal_extensions import (
+    PersistedTokenCache,
+    build_encrypted_persistence,
+)
 
 
 # ============================================================
 # LOAD ENVIRONMENT VARIABLES
 # ============================================================
 
-# Loads values from local .env file
-# This is used when running the application on your computer.
 load_dotenv()
 
 
@@ -20,13 +25,8 @@ load_dotenv()
 
 def get_config_value(key):
     """
-    Get configuration value from:
-
-    1. Local environment / .env
-    2. Streamlit Cloud Secrets
-
-    This allows the same code to work both locally
-    and on Streamlit Cloud.
+    Get configuration from the local .env file
+    or Streamlit Cloud Secrets.
     """
 
     value = os.getenv(key)
@@ -56,29 +56,25 @@ TENANT_ID = get_config_value("TENANT_ID")
 if not CLIENT_ID:
     raise ValueError(
         "CLIENT_ID is not configured. "
-        "Add CLIENT_ID to your .env file locally "
+        "Add it to your local .env file "
         "or Streamlit Cloud Secrets."
     )
-
 
 if not TENANT_ID:
     raise ValueError(
         "TENANT_ID is not configured. "
-        "Add TENANT_ID to your .env file locally "
+        "Add it to your local .env file "
         "or Streamlit Cloud Secrets."
     )
 
 
 # ============================================================
-# MICROSOFT AUTHORITY
+# MICROSOFT AUTHORITY AND PERMISSIONS
 # ============================================================
 
-AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
-
-
-# ============================================================
-# MICROSOFT GRAPH PERMISSIONS
-# ============================================================
+AUTHORITY = (
+    f"https://login.microsoftonline.com/{TENANT_ID}"
+)
 
 SCOPES = [
     "User.Read",
@@ -87,140 +83,120 @@ SCOPES = [
 
 
 # ============================================================
+# PERSISTENT TOKEN CACHE
+# ============================================================
+
+CACHE_DIRECTORY = Path.home() / ".resume_matcher"
+
+CACHE_FILE = (
+    CACHE_DIRECTORY / "msal_token_cache.bin"
+)
+
+
+def create_token_cache():
+    """
+    Create an encrypted token cache on this computer.
+
+    The cache can survive application restarts.
+    Windows protects the encrypted cache using
+    the current Windows user's security context.
+    """
+
+    CACHE_DIRECTORY.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    persistence = build_encrypted_persistence(
+        str(CACHE_FILE)
+    )
+
+    return PersistedTokenCache(persistence)
+
+
+# ============================================================
 # GET ACCESS TOKEN
 # ============================================================
 
 def get_access_token(on_device_code=None):
     """
-    Authenticate the user with Microsoft.
+    Get a Microsoft Graph access token.
 
-    Authentication flow:
-
-    1. Try existing cached Microsoft account.
+    1. Load the persistent token cache.
     2. Try silent authentication.
-    3. If silent authentication fails,
-       start Microsoft Device Code authentication.
-    4. Return Microsoft Graph access token.
-
-    Parameters
-    ----------
-    on_device_code : callable, optional
-        Callback function used by Streamlit to display
-        the Microsoft device-login instructions.
-
-    Returns
-    -------
-    str
-        Microsoft Graph access token.
+    3. Request device-code login only when necessary.
+    4. Return the access token.
     """
 
-    # --------------------------------------------------------
-    # Create MSAL Public Client Application
-    # --------------------------------------------------------
+    # Load the saved encrypted token cache.
+    token_cache = create_token_cache()
 
+    # Give MSAL the persistent cache.
     app = msal.PublicClientApplication(
         client_id=CLIENT_ID,
         authority=AUTHORITY,
+        token_cache=token_cache,
     )
 
-    # --------------------------------------------------------
-    # Check existing logged-in accounts
-    # --------------------------------------------------------
-
+    # Look for previously authenticated accounts.
     accounts = app.get_accounts()
 
     if accounts:
-
         result = app.acquire_token_silent(
             scopes=SCOPES,
             account=accounts[0],
         )
 
         if result and "access_token" in result:
-
             return result["access_token"]
 
-    # --------------------------------------------------------
-    # Start Device Code Authentication
-    # --------------------------------------------------------
-
+    # No usable cached token: begin Microsoft login.
     flow = app.initiate_device_flow(
         scopes=SCOPES
     )
 
-    # Microsoft should return a user_code.
-    # If not, authentication could not be started.
-
     if "user_code" not in flow:
-
         error_description = flow.get(
             "error_description",
-            "Unknown Microsoft authentication error."
+            "Unknown Microsoft authentication error.",
         )
 
         raise Exception(
-            f"Unable to start Microsoft device authentication: "
+            "Unable to start Microsoft device authentication: "
             f"{error_description}"
         )
 
-    # --------------------------------------------------------
-    # Microsoft Login Instructions
-    # --------------------------------------------------------
-
     message = flow.get(
         "message",
-        "Open the Microsoft device login page and enter the provided code."
+        "Open Microsoft's device login page and enter the code.",
     )
-
-    # If the Streamlit application supplied a callback,
-    # display the message through the UI.
 
     if on_device_code:
-
         on_device_code(message)
-
     else:
-
         print(message)
 
-    # --------------------------------------------------------
-    # Wait for User Authentication
-    # --------------------------------------------------------
-
-    result = app.acquire_token_by_device_flow(
-        flow
-    )
-
-    # --------------------------------------------------------
-    # Check Authentication Result
-    # --------------------------------------------------------
+    # Wait for the user to finish signing in.
+    result = app.acquire_token_by_device_flow(flow)
 
     if not result:
-
         raise Exception(
             "Microsoft authentication returned no result."
         )
 
     if "access_token" not in result:
-
-        error = result.get(
-            "error",
-            "unknown_error"
-        )
+        error = result.get("error", "unknown_error")
 
         error_description = result.get(
             "error_description",
-            "Microsoft authentication failed."
+            "Microsoft authentication failed.",
         )
 
         raise Exception(
-            f"Microsoft authentication failed.\n"
+            "Microsoft authentication failed.\n"
             f"Error: {error}\n"
             f"Details: {error_description}"
         )
 
-    # --------------------------------------------------------
-    # Return Access Token
-    # --------------------------------------------------------
-
+    # MSAL updates the persistent cache automatically.
     return result["access_token"]
